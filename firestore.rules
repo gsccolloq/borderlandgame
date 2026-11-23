@@ -232,41 +232,22 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // 5. Collection `arenas`: Trạng thái phòng đấu trực tiếp
+    // 5. Collection `arenas`: Trạng thái phòng đấu trực tiếp (Serverless Real-Time qua Firestore onSnapshot)
     match /arenas/{arenaId} {
-      // Người chơi ẩn danh (Guest) và tất cả người dùng được đọc thông tin phòng đang mở
-      allow get: if isValidId(arenaId) && (existing().isPublic == true || isHost());
-      allow list: if resource.data.isPublic == true || isHost();
+      // Cho phép người chơi ẩn danh (Guest) và Host tham gia, đồng bộ FSM thời gian thực và nộp đáp án
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
+      allow delete: if isHost() || isSuperAdmin();
 
-      // Chỉ Super Admin và Host mới được tạo phòng đấu mới
-      allow create: if isHost()
-        && isValidId(arenaId)
-        && isValidArenaRoom(incoming())
-        && incoming().hostUid == request.auth.uid
-        && incoming().fsmState == 'Lobby'
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
+      match /{allSubcollections=**} {
+        allow read, write: if true;
+      }
+    }
 
-      // Chỉ Chủ phòng hoặc Super Admin mới được điều khiển tiến trình trận đấu
-      allow update: if isValidId(arenaId)
-        && (
-          (isSuperAdmin() && isValidArenaRoom(incoming()) && incoming().updatedAt == request.time)
-          || (
-            isHost()
-            && isValidArenaRoom(incoming())
-            && existing().hostUid == request.auth.uid
-            && incoming().hostUid == existing().hostUid
-            && incoming().roomCode == existing().roomCode
-            && incoming().createdAt == existing().createdAt
-            && incoming().updatedAt == request.time
-            && (
-              incoming().diff(existing()).affectedKeys().hasOnly(['fsmState', 'currentRound', 'activePlayers', 'updatedAt'])
-              || incoming().diff(existing()).affectedKeys().hasOnly(['activePlayers', 'updatedAt'])
-            )
-          )
-        );
-
-      allow delete: if isSuperAdmin() || (isHost() && existing().hostUid == request.auth.uid);
+    // Kiểm tra kết nối Firestore lúc khởi động
+    match /test/{docId} {
+      allow read: if true;
     }
 
     // 6. Collection `questionSets`: Bộ câu hỏi tùy chỉnh (Excel / Ngân hàng đề)
