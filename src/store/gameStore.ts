@@ -66,7 +66,38 @@ interface FirestoreArenaDoc {
   laserStrike?: boolean;
   updatedAt: unknown;
   createdAt: unknown;
+  visaExtensionConfig?: {
+    ratio: number;
+    maxSlots: number;
+    visaReward: number;
+    question: ArenaQuestion;
+  };
+  registrationStartedAt?: number;
+  registrationEndsAt?: number;
+  registeredPlayers?: Array<{ playerId: string; name: string; timestamp: number }>;
+  qualifiedPlayerIds?: string[];
+  extensionSubmissions?: Record<string, { optionIndex: number; isCorrect: boolean; timestamp: number }>;
 }
+
+export const DEFAULT_VISA_EXTENSION_QUESTION: ArenaQuestion = {
+  id: 'ext-default-1',
+  subject: 'Thử Thách Sinh Tử',
+  suit: 'hearts',
+  cardRank: 'A',
+  difficulty: 9,
+  topic: 'Gia hạn Visa Sinh tồn',
+  prompt: 'Trong thuyết Trò chơi (Game Theory), khi hai kẻ bị thanh trừng cùng đứng trước cơ hội sống sót duy nhất, nghịch lý kinh điển nào mô tả tình thế mà việc mỗi bên tối ưu hóa quyền lợi ích kỷ lại dẫn đến sự hủy diệt chung cho cả hai?',
+  options: [
+    'Nghịch lý Fermi (Fermi Paradox)',
+    'Thế lưỡng nan của người tù (Prisoner\'s Dilemma)',
+    'Nghịch lý Con quạ (Hempel\'s Raven)',
+    'Nghịch lý Monty Hall'
+  ],
+  correctIndex: 1,
+  explanation: 'Prisoner\'s Dilemma (Thế lưỡng nan của người tù) là mô hình chứng minh khi hai bên không thể tin tưởng hợp tác và cùng chọn phản bội, kết cục đạt được là cân bằng Nash tồi tệ nhất.',
+  timeLimitMs: 25000,
+  source: 'bank',
+};
 
 // === EMBEDDED QUESTION BANK FOR SERVERLESS RUNTIME ===
 const BUILTIN_QUESTION_BANK: ArenaQuestion[] = [
@@ -371,6 +402,8 @@ function createPlayerInternal(id: string, name: string, uid?: string): PlayerSta
     suitStats: createEmptySuitStats(),
     topicStats: {},
     answerLog: [],
+    currentQuestionIndex: 0,
+    completedQuestions: false,
   };
   if (uid && uid.trim()) {
     player.uid = uid.trim();
@@ -548,6 +581,13 @@ function subscribeFirestoreArenaInternal(
         players: data.players || [],
         hostPlayerId: data.hostPlayerId,
         serverTime: Date.now(),
+        fullDeck: data.fullDeck || [],
+        visaExtensionConfig: data.visaExtensionConfig,
+        registrationStartedAt: data.registrationStartedAt,
+        registrationEndsAt: data.registrationEndsAt,
+        registeredPlayers: data.registeredPlayers || [],
+        qualifiedPlayerIds: data.qualifiedPlayerIds || [],
+        extensionSubmissions: data.extensionSubmissions || {},
       };
 
       onUpdate(snapshot, Boolean(data.laserStrike));
@@ -582,6 +622,8 @@ async function startFirestoreArenaInternal(roomCode: string): Promise<void> {
       suitStats: createEmptySuitStats(),
       topicStats: {},
       answerLog: [],
+      currentQuestionIndex: 0,
+      completedQuestions: false,
     };
     delete cleaned.lastCorrect;
     delete cleaned.lastResponseMs;
@@ -1082,6 +1124,394 @@ async function injectQuestionFirestoreArenaInternal(
   }));
 }
 
+// === REQUIREMENT 1: INDIVIDUAL ANSWER CONFIRMATION & ADVANCEMENT ===
+async function submitIndividualAnswerInternal(params: {
+  roomCode: string;
+  playerId: string;
+  optionIndex: number;
+  responseMs: number;
+  wagered: boolean;
+}): Promise<{
+  isCorrect: boolean;
+  scoreDelta: number;
+  visaDelta: number;
+  newVisa: number;
+  newScore: number;
+  explanation: string;
+} | null> {
+  const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const players = [...(data.players || [])];
+  const playerIdx = players.findIndex((p) => p.id === params.playerId);
+  if (playerIdx === -1) return null;
+
+  const player = players[playerIdx];
+  const currentIdx = player.currentQuestionIndex || 0;
+  const deck = data.fullDeck && data.fullDeck.length > 0
+    ? data.fullDeck
+    : getQuestionsForSubjectInternal(data.subject);
+
+  const q = deck[currentIdx] || deck[0];
+  if (!q) return null;
+
+  const isCorrect = params.optionIndex === q.correctIndex;
+  const speedRatio = Math.max(0, 1 - params.responseMs / (q.timeLimitMs || 15000));
+  const suitMultiplier = q.suit === 'diamonds' ? 1.35 : q.suit === 'spades' ? 1.25 : 1.1;
+  const baseScore = Math.round((200 + speedRatio * 180) * suitMultiplier);
+  const canWager = q.suit === 'hearts' && params.wagered && player.visa >= 2;
+  const scoreDelta = isCorrect ? (canWager ? baseScore * 2 : baseScore) : 0;
+
+  let visaDelta = 0;
+  if (isCorrect) {
+    if (canWager && player.visa < player.maxVisa) {
+      visaDelta = 1;
+    }
+  } else {
+    visaDelta = canWager ? -2 : -1;
+  }
+
+  const newVisa = Math.max(0, Math.min(player.maxVisa, player.visa + visaDelta));
+  const newStatus = newVisa === 0 ? 'eliminated' : player.status;
+  const newScore = player.score + scoreDelta;
+  const newStreak = isCorrect ? player.streak + 1 : 0;
+
+  const suitStats = { ...player.suitStats };
+  const suitBucket = { ...(suitStats[q.suit] || { attempts: 0, correct: 0, totalResponseMs: 0 }) };
+  suitBucket.attempts += 1;
+  suitBucket.totalResponseMs += params.responseMs;
+  if (isCorrect) suitBucket.correct += 1;
+  suitStats[q.suit] = suitBucket;
+
+  const answerLog: QuestionLogEntry[] = [
+    ...(player.answerLog || []),
+    {
+      roundNumber: currentIdx + 1,
+      questionId: q.id,
+      suit: q.suit,
+      cardRank: q.cardRank,
+      difficulty: q.difficulty,
+      topic: q.topic,
+      selectedIndex: params.optionIndex,
+      correctIndex: q.correctIndex,
+      isCorrect,
+      responseMs: params.responseMs,
+      visaDelta,
+      scoreDelta,
+      wagered: canWager,
+    },
+  ];
+
+  players[playerIdx] = {
+    ...player,
+    visa: newVisa,
+    status: newStatus,
+    score: newScore,
+    streak: newStreak,
+    suitStats,
+    answerLog,
+    hasAnsweredCurrent: true,
+    lastCorrect: isCorrect,
+    lastResponseMs: params.responseMs,
+    lastVisaDelta: visaDelta,
+    lastScoreDelta: scoreDelta,
+  };
+
+  const logs = [...(data.dealerLogs || [])];
+  if (newVisa === 0 && player.visa > 0) {
+    logs.unshift({
+      id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+      phase: data.fsmState,
+      message: `Tia laser quỹ đạo kích hoạt! Người chơi ${player.name} vừa bị thanh trừng (Visa chạm 0).`,
+      action: 'execution',
+    });
+  }
+
+  await updateDoc(ref, sanitizeForFirestore({
+    players,
+    dealerLogs: logs.slice(0, 24),
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
+
+  return {
+    isCorrect,
+    scoreDelta,
+    visaDelta,
+    newVisa,
+    newScore,
+    explanation: q.explanation || '',
+  };
+}
+
+async function advancePlayerQuestionInternal(params: {
+  roomCode: string;
+  playerId: string;
+  nextIndex: number;
+}): Promise<void> {
+  const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const players = [...(data.players || [])];
+  const idx = players.findIndex((p) => p.id === params.playerId);
+  if (idx === -1) return;
+
+  const totalDeckLen = data.fullDeck?.length || 0;
+  const isFinished = totalDeckLen > 0 && params.nextIndex >= totalDeckLen;
+
+  players[idx] = {
+    ...players[idx],
+    currentQuestionIndex: params.nextIndex,
+    hasAnsweredCurrent: false,
+    completedQuestions: isFinished,
+  };
+
+  await updateDoc(ref, sanitizeForFirestore({
+    players,
+    updatedAt: serverTimestamp(),
+  }));
+}
+
+// === REQUIREMENTS 2 & 3: VISA EXTENSION REAL-TIME WORKFLOW ===
+async function activateVisaExtensionInternal(params: {
+  roomCode: string;
+  ratio: number;
+  visaReward: number;
+  question: ArenaQuestion;
+}): Promise<void> {
+  const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const deadPlayers = (data.players || []).filter((p) => p.visa <= 0 || p.status === 'eliminated');
+  const safeRatio = Math.max(10, Math.min(100, params.ratio || 50));
+  const maxSlots = Math.max(1, Math.ceil(deadPlayers.length * (safeRatio / 100)));
+  const registrationEndsAt = Date.now() + 10000;
+
+  const log: DealerLogEntry = {
+    id: `log-${Date.now()}`,
+    timestamp: Date.now(),
+    phase: 'visa_extension_registration',
+    message: `VÒNG GIA HẠN VISA ĐÃ KÍCH HOẠT! Có ${maxSlots} suất (${safeRatio}%) cho ${deadPlayers.length} người chơi bị loại đăng ký nhanh nhất trong 10 giây!`,
+    action: 'revival',
+  };
+
+  await updateDoc(ref, sanitizeForFirestore({
+    fsmState: 'visa_extension_registration',
+    registrationStartedAt: Date.now(),
+    registrationEndsAt,
+    visaExtensionConfig: {
+      ratio: safeRatio,
+      maxSlots,
+      visaReward: params.visaReward || 2,
+      question: params.question,
+    },
+    registeredPlayers: [],
+    qualifiedPlayerIds: [],
+    extensionSubmissions: {},
+    dealerMessage: log.message,
+    dealerLogs: [log, ...(data.dealerLogs || [])].slice(0, 24),
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
+}
+
+async function registerForVisaExtensionInternal(params: {
+  roomCode: string;
+  playerId: string;
+  playerName: string;
+}): Promise<{ success: boolean; rank?: number; reason?: string }> {
+  const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return { success: false, reason: 'Phòng không tồn tại' };
+
+  const data = snap.data() as FirestoreArenaDoc;
+  if (data.fsmState !== 'visa_extension_registration') {
+    return { success: false, reason: 'Vòng đăng ký chưa mở hoặc đã kết thúc' };
+  }
+
+  const registered = [...(data.registeredPlayers || [])];
+  const maxSlots = data.visaExtensionConfig?.maxSlots || 1;
+
+  const existingIdx = registered.findIndex((r) => r.playerId === params.playerId);
+  if (existingIdx !== -1) {
+    return { success: true, rank: existingIdx + 1 };
+  }
+
+  if (registered.length >= maxSlots) {
+    return { success: false, reason: 'Đã hết suất tham gia vòng này' };
+  }
+
+  const newEntry = {
+    playerId: params.playerId,
+    name: params.playerName,
+    timestamp: Date.now(),
+  };
+  registered.push(newEntry);
+
+  const qualifiedPlayerIds = registered.slice(0, maxSlots).map((r) => r.playerId);
+
+  await updateDoc(ref, sanitizeForFirestore({
+    registeredPlayers: registered,
+    qualifiedPlayerIds,
+    updatedAt: serverTimestamp(),
+  }));
+
+  return { success: true, rank: registered.length };
+}
+
+async function startVisaExtensionQuizInternal(roomCode: string): Promise<void> {
+  const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  if (data.fsmState !== 'visa_extension_registration') return;
+
+  const maxSlots = data.visaExtensionConfig?.maxSlots || 1;
+  const qualifiedPlayerIds = (data.registeredPlayers || []).slice(0, maxSlots).map((r) => r.playerId);
+
+  const log: DealerLogEntry = {
+    id: `log-${Date.now()}`,
+    timestamp: Date.now(),
+    phase: 'visa_extension_quiz',
+    message: `Hết 10 giây đăng ký! ${qualifiedPlayerIds.length} người chơi trúng suất bước vào câu hỏi Gia hạn Visa.`,
+    action: 'revival',
+  };
+
+  await updateDoc(ref, sanitizeForFirestore({
+    fsmState: 'visa_extension_quiz',
+    qualifiedPlayerIds,
+    dealerMessage: log.message,
+    dealerLogs: [log, ...(data.dealerLogs || [])].slice(0, 24),
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
+}
+
+async function submitVisaExtensionAnswerInternal(params: {
+  roomCode: string;
+  playerId: string;
+  optionIndex: number;
+}): Promise<{ isCorrect: boolean; visaReward: number } | null> {
+  const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  if (data.fsmState !== 'visa_extension_quiz') return null;
+
+  const q = data.visaExtensionConfig?.question;
+  if (!q) return null;
+
+  const isCorrect = params.optionIndex === q.correctIndex;
+  const visaReward = data.visaExtensionConfig?.visaReward || 2;
+  const players = [...(data.players || [])];
+  const playerIdx = players.findIndex((p) => p.id === params.playerId);
+  if (playerIdx === -1) return null;
+
+  const player = players[playerIdx];
+  const logs = [...(data.dealerLogs || [])];
+
+  if (isCorrect) {
+    players[playerIdx] = {
+      ...player,
+      visa: visaReward,
+      status: 'active',
+      streak: 1,
+      revivalUsed: true,
+      lastCorrect: true,
+      lastVisaDelta: visaReward,
+    };
+    logs.unshift({
+      id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+      phase: 'visa_extension_quiz',
+      message: `⚡ HỒI SINH THÀNH CÔNG! ${player.name} vừa trả lời CHÍNH XÁC câu hỏi Gia hạn và nhận +${visaReward} ngày Visa!`,
+      action: 'revival',
+    });
+  } else {
+    players[playerIdx] = {
+      ...player,
+      visa: 0,
+      status: 'eliminated',
+      lastCorrect: false,
+    };
+  }
+
+  const submissions = {
+    ...(data.extensionSubmissions || {}),
+    [params.playerId]: {
+      optionIndex: params.optionIndex,
+      isCorrect,
+      timestamp: Date.now(),
+    },
+  };
+
+  await updateDoc(ref, sanitizeForFirestore({
+    players,
+    extensionSubmissions: submissions,
+    dealerLogs: logs.slice(0, 24),
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
+
+  return { isCorrect, visaReward };
+}
+
+async function resumeGameAfterExtensionInternal(roomCode: string): Promise<void> {
+  const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const log: DealerLogEntry = {
+    id: `log-${Date.now()}`,
+    timestamp: Date.now(),
+    phase: 'Question',
+    message: 'Host đã bấm TIẾP TỤC TRẬN ĐẤU! Toàn bộ người chơi còn sống tiếp tục thử thách từ vị trí của mình.',
+    action: 'briefing',
+  };
+
+  await updateDoc(ref, sanitizeForFirestore({
+    fsmState: 'Question',
+    dealerMessage: log.message,
+    dealerLogs: [log, ...(data.dealerLogs || [])].slice(0, 24),
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
+}
+
+async function finishMatchFirestoreArenaInternal(roomCode: string): Promise<void> {
+  const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const endLog: DealerLogEntry = {
+    id: `log-${Date.now()}`,
+    timestamp: Date.now(),
+    phase: 'Leaderboard',
+    message: 'Quản trò đã bấm kết thúc trận đấu. Bảng thành tích sinh tồn chính thức được niêm phong.',
+    action: 'briefing',
+  };
+
+  await updateDoc(ref, sanitizeForFirestore({
+    fsmState: 'Leaderboard',
+    laserStrike: false,
+    dealerMessage: endLog.message,
+    dealerLogs: [endLog, ...(data.dealerLogs || [])].slice(0, 24),
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
+}
+
 interface GameStoreState {
   // Navigation & UI
   activeTab: NavTab;
@@ -1176,6 +1606,37 @@ interface GameStoreState {
   launchRevival: () => Promise<void>;
   reportTabViolation: () => Promise<void>;
   leaveRoom: () => void;
+
+  // Individual Fast-Paced Answer Actions
+  submitIndividualAnswer: (params: {
+    optionIndex: number;
+    responseMs: number;
+    wagered: boolean;
+  }) => Promise<{
+    isCorrect: boolean;
+    scoreDelta: number;
+    visaDelta: number;
+    newVisa: number;
+    newScore: number;
+    explanation: string;
+  } | null>;
+  advancePlayerQuestion: (nextIndex: number) => Promise<void>;
+
+  // Visa Extension & Projector Mode
+  visaExtensionDraft: ArenaQuestion;
+  setVisaExtensionDraft: (q: ArenaQuestion) => void;
+  visaRewardDays: number;
+  setVisaRewardDays: (days: number) => void;
+  extensionRatio: number;
+  setExtensionRatio: (ratio: number) => void;
+  activateVisaExtension: (params?: { ratio?: number; visaReward?: number; question?: ArenaQuestion }) => Promise<void>;
+  registerForVisaExtension: () => Promise<{ success: boolean; rank?: number; reason?: string }>;
+  startVisaExtensionQuiz: () => Promise<void>;
+  submitVisaExtensionAnswer: (optionIndex: number) => Promise<{ isCorrect: boolean; visaReward: number } | null>;
+  resumeGameAfterExtension: () => Promise<void>;
+  finishMatch: () => Promise<void>;
+  projectorModeOpen: boolean;
+  setProjectorModeOpen: (open: boolean) => void;
 }
 
 let activeArenaUnsub: (() => void) | null = null;
@@ -1731,6 +2192,128 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       await reportTabViolationFirestoreInternal(state.room.roomCode, state.playerId);
     } catch (err) {
       console.warn('Lỗi ghi nhận vi phạm tab:', err);
+    }
+  },
+
+  // Visa Extension & Projector Mode defaults
+  visaExtensionDraft: DEFAULT_VISA_EXTENSION_QUESTION,
+  setVisaExtensionDraft: (q) => set({ visaExtensionDraft: q }),
+  visaRewardDays: 2,
+  setVisaRewardDays: (days) => set({ visaRewardDays: days }),
+  extensionRatio: 50,
+  setExtensionRatio: (ratio) => set({ extensionRatio: ratio }),
+  projectorModeOpen: false,
+  setProjectorModeOpen: (open) => set({ projectorModeOpen: open }),
+
+  // Requirement 1: Individual Answer Submission & Immediate Advancement
+  submitIndividualAnswer: async (params) => {
+    const state = get();
+    if (!state.room) return null;
+    try {
+      const res = await submitIndividualAnswerInternal({
+        roomCode: state.room.roomCode,
+        playerId: state.playerId,
+        optionIndex: params.optionIndex,
+        responseMs: params.responseMs,
+        wagered: params.wagered,
+      });
+      return res;
+    } catch (err) {
+      console.error('Lỗi nộp câu trả lời cá nhân:', err);
+      return null;
+    }
+  },
+
+  advancePlayerQuestion: async (nextIndex) => {
+    const state = get();
+    if (!state.room) return;
+    try {
+      await advancePlayerQuestionInternal({
+        roomCode: state.room.roomCode,
+        playerId: state.playerId,
+        nextIndex,
+      });
+    } catch (err) {
+      console.error('Lỗi chuyển câu tiếp theo:', err);
+    }
+  },
+
+  // Requirements 2 & 3: Visa Extension Lifecycle Actions
+  activateVisaExtension: async (params) => {
+    const state = get();
+    if (!state.room) return;
+    try {
+      const ratio = params?.ratio ?? state.extensionRatio ?? 50;
+      const visaReward = params?.visaReward ?? state.visaRewardDays ?? 2;
+      const question = params?.question ?? state.visaExtensionDraft ?? DEFAULT_VISA_EXTENSION_QUESTION;
+      await activateVisaExtensionInternal({
+        roomCode: state.room.roomCode,
+        ratio,
+        visaReward,
+        question,
+      });
+    } catch (err) {
+      set({ roomError: err instanceof Error ? err.message : 'Lỗi kích hoạt Vòng Gia hạn Visa.' });
+    }
+  },
+
+  registerForVisaExtension: async () => {
+    const state = get();
+    if (!state.room) return { success: false, reason: 'Chưa vào phòng' };
+    try {
+      const res = await registerForVisaExtensionInternal({
+        roomCode: state.room.roomCode,
+        playerId: state.playerId,
+        playerName: state.playerName,
+      });
+      return res;
+    } catch (err) {
+      return { success: false, reason: err instanceof Error ? err.message : 'Lỗi đăng ký' };
+    }
+  },
+
+  startVisaExtensionQuiz: async () => {
+    const state = get();
+    if (!state.room) return;
+    try {
+      await startVisaExtensionQuizInternal(state.room.roomCode);
+    } catch (err) {
+      console.error('Lỗi bắt đầu câu hỏi Gia hạn:', err);
+    }
+  },
+
+  submitVisaExtensionAnswer: async (optionIndex) => {
+    const state = get();
+    if (!state.room) return null;
+    try {
+      return await submitVisaExtensionAnswerInternal({
+        roomCode: state.room.roomCode,
+        playerId: state.playerId,
+        optionIndex,
+      });
+    } catch (err) {
+      console.error('Lỗi gửi đáp án Gia hạn:', err);
+      return null;
+    }
+  },
+
+  resumeGameAfterExtension: async () => {
+    const state = get();
+    if (!state.room) return;
+    try {
+      await resumeGameAfterExtensionInternal(state.room.roomCode);
+    } catch (err) {
+      set({ roomError: err instanceof Error ? err.message : 'Lỗi tiếp tục trận đấu.' });
+    }
+  },
+
+  finishMatch: async () => {
+    const state = get();
+    if (!state.room) return;
+    try {
+      await finishMatchFirestoreArenaInternal(state.room.roomCode);
+    } catch (err) {
+      set({ roomError: err instanceof Error ? err.message : 'Lỗi kết thúc trận đấu.' });
     }
   },
 
