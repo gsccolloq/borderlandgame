@@ -1,20 +1,6 @@
-import type { CardSuit } from '../src/types/game.ts';
+import type { CardSuit, ArenaQuestion } from '../types/game';
 
-export interface ServerQuestion {
-  id: string;
-  subject: string;
-  suit: CardSuit;
-  cardRank: string;
-  difficulty: number;
-  topic: string;
-  prompt: string;
-  options: [string, string, string, string];
-  correctIndex: number;
-  explanation: string;
-  dealerHint?: string;
-  timeLimitMs: number;
-  source: 'bank' | 'gemini' | 'excel';
-}
+export type ServerQuestion = ArenaQuestion;
 
 export const SERVER_QUESTION_BANK: ServerQuestion[] = [
   // === COMPUTER SCIENCE & ALGORITHMS ===
