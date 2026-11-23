@@ -84,6 +84,13 @@ export function removeStoredApiKey(): void {
 }
 
 /**
+ * Check if a Gemini API Key is configured in localStorage or env
+ */
+export function hasConnectedApiKey(): boolean {
+  return Boolean(getStoredApiKey());
+}
+
+/**
  * Retrieve Selected Model: default is 'gemini-3-flash-preview'
  */
 export function getStoredModel(): string {
@@ -195,10 +202,14 @@ async function callGeminiRestApi(params: {
 }
 
 /**
- * Verify API key connectivity with Google Gemini
+ * Verify API key connectivity directly from browser with Google Gemini
+ * Uses stable gemini-2.5-flash as default probe if not specified
  */
-export async function testGeminiApiKey(apiKey: string, modelId?: string): Promise<{ ok: boolean; message: string; rawError?: string }> {
-  const targetModel = modelId || getStoredModel();
+export async function testGeminiApiKey(
+  apiKey: string,
+  modelId?: string
+): Promise<{ ok: boolean; message: string; rawError?: string }> {
+  const targetModel = modelId || 'gemini-2.5-flash';
   try {
     const text = await callGeminiRestApi({
       apiKey,
@@ -208,14 +219,26 @@ export async function testGeminiApiKey(apiKey: string, modelId?: string): Promis
     });
     const parsed = JSON.parse(text);
     if (parsed && (parsed.status === 'ok' || parsed.message)) {
-      return { ok: true, message: `Kết nối thành công tới ${targetModel}!` };
+      return { ok: true, message: `Kết nối thành công! Google Gemini (${targetModel}) đã sẵn sàng hoạt động.` };
     }
-    return { ok: true, message: `API Key hợp lệ! (Phản hồi từ ${targetModel})` };
+    return { ok: true, message: `API Key hợp lệ! (Phản hồi thành công từ ${targetModel})` };
   } catch (err) {
     const rawError = extractRawApiError(err);
+    let friendlyMessage = `Không thể kết nối với ${targetModel}.`;
+
+    if (rawError.includes('API_KEY_INVALID') || rawError.includes('400')) {
+      friendlyMessage = 'API Key không chính xác hoặc không hợp lệ. Vui lòng kiểm tra lại mã key từ Google AI Studio.';
+    } else if (rawError.includes('RESOURCE_EXHAUSTED') || rawError.includes('429')) {
+      friendlyMessage = 'Hạn mức Quota tạm thời vượt quá giới hạn (429 Resource Exhausted). Vui lòng thử lại sau giây lát hoặc đổi model sang gemini-2.5-flash.';
+    } else if (rawError.includes('PERMISSION_DENIED') || rawError.includes('403')) {
+      friendlyMessage = 'Quyền truy cập bị từ chối hoặc API Generative Language chưa được cấp phép cho dự án này.';
+    } else if (rawError.includes('503') || rawError.includes('500')) {
+      friendlyMessage = 'Máy chủ Google Gemini tạm thời không khả dụng. Vui lòng thử lại sau giây lát.';
+    }
+
     return {
       ok: false,
-      message: `Không thể kết nối với ${targetModel}.`,
+      message: friendlyMessage,
       rawError,
     };
   }
@@ -316,63 +339,13 @@ Tạo đúng 1 câu hỏi trắc nghiệm sinh tồn bằng tiếng Việt cho B
     update();
 
     try {
-      // 1. Try server endpoint first if available (passes apiKey & model in headers)
-      let rawJson: string | null = null;
-      try {
-        const srvRes = await fetch('/api/dealer/generate-question', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-gemini-api-key': apiKey,
-            'x-gemini-model': currentModel,
-          },
-          body: JSON.stringify({
-            subject: input.subject,
-            suit: input.suit,
-            difficulty: input.difficulty,
-            isRevival: input.isRevival,
-            apiKey,
-            model: currentModel,
-          }),
-        });
-        if (srvRes.ok) {
-          const srvData = await srvRes.json();
-          if (srvData.ok && srvData.questionPreview) {
-            // Server handled it directly
-            steps[1].status = 'completed';
-            steps[1].detail = `Hoàn tất thành công bởi ${currentModel} (qua Server)`;
-            steps[2].status = 'completed';
-            steps[2].detail = 'Đáp án đã được niêm phong an toàn trên Máy chủ';
-            update();
-
-            const preview = srvData.questionPreview;
-            const fullQuestion: ServerQuestion = {
-              id: preview.id || `q-${Date.now()}`,
-              subject: input.subject,
-              suit: preview.suit || input.suit,
-              cardRank: preview.cardRank || cardRank,
-              difficulty: preview.difficulty || clampedDiff,
-              topic: preview.topic || 'Thử thách AI',
-              prompt: preview.prompt,
-              options: ['', '', '', ''], // Sealed on server
-              correctIndex: -1,
-              explanation: '',
-              dealerHint: preview.dealerHint,
-              timeLimitMs: preview.timeLimitMs || 15000,
-              source: 'gemini',
-            };
-            return { question: fullQuestion, modelUsed: currentModel, retriedModels };
-          }
-        }
-      } catch {
-        // Server endpoint not reachable (e.g. running as Vercel static SPA), fall back to direct client REST call
-      }
-
-      // 2. Direct client call via Google Gemini REST API
-      rawJson = await callGeminiRestApi({
+      // Direct client call via Google Gemini REST API (100% Serverless on Vercel)
+      const rawJson = await callGeminiRestApi({
         apiKey,
         model: currentModel,
         prompt: promptText,
+        systemInstruction: DEALER_SYSTEM_INSTRUCTION,
+      });
         systemInstruction: DEALER_SYSTEM_INSTRUCTION,
       });
 
