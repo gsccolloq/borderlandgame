@@ -346,8 +346,6 @@ Tạo đúng 1 câu hỏi trắc nghiệm sinh tồn bằng tiếng Việt cho B
         prompt: promptText,
         systemInstruction: DEALER_SYSTEM_INSTRUCTION,
       });
-        systemInstruction: DEALER_SYSTEM_INSTRUCTION,
-      });
 
       // Step 2 Completed successfully
       steps[1].status = 'completed';
