@@ -1,0 +1,263 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private survivor profile containing PII and cumulative survival statistics.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "totalVisaEarned": {
+          "type": "integer"
+        },
+        "gamesPlayed": {
+          "type": "integer"
+        },
+        "gamesSurvived": {
+          "type": "integer"
+        },
+        "avgResponseMs": {
+          "type": "number"
+        },
+        "tabViolationsTotal": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "email",
+        "totalVisaEarned",
+        "gamesPlayed",
+        "gamesSurvived",
+        "avgResponseMs",
+        "tabViolationsTotal",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Public survivor ledger entry without any PII.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "bestScore": {
+          "type": "integer"
+        },
+        "visaBalance": {
+          "type": "integer"
+        },
+        "survivalRate": {
+          "type": "number"
+        },
+        "avgResponseMs": {
+          "type": "number"
+        },
+        "rankSuit": {
+          "type": "string",
+          "enum": ["spades", "hearts", "clubs", "diamonds"]
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "bestScore",
+        "visaBalance",
+        "survivalRate",
+        "avgResponseMs",
+        "rankSuit",
+        "isPublic",
+        "updatedAt"
+      ]
+    },
+    "MatchRecord": {
+      "title": "MatchRecord",
+      "description": "Immutable completed game session record for Game Theory analytics and Excel export.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "arenaCode": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 16,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "enum": ["survived", "eliminated", "disqualified"]
+        },
+        "finalVisa": {
+          "type": "integer"
+        },
+        "score": {
+          "type": "integer"
+        },
+        "accuracyPct": {
+          "type": "number"
+        },
+        "avgResponseMs": {
+          "type": "number"
+        },
+        "tabSwitches": {
+          "type": "integer"
+        },
+        "spadesScore": {
+          "type": "number"
+        },
+        "heartsScore": {
+          "type": "number"
+        },
+        "clubsScore": {
+          "type": "number"
+        },
+        "diamondsScore": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "arenaCode",
+        "subject",
+        "status",
+        "finalVisa",
+        "score",
+        "accuracyPct",
+        "avgResponseMs",
+        "tabSwitches",
+        "spadesScore",
+        "heartsScore",
+        "clubsScore",
+        "diamondsScore",
+        "createdAt"
+      ]
+    },
+    "ArenaRoom": {
+      "title": "ArenaRoom",
+      "description": "Public real-time Arena metadata synced via Firestore snapshots. Never stores secret answers.",
+      "type": "object",
+      "properties": {
+        "hostUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomCode": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 12,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "fsmState": {
+          "type": "string",
+          "enum": ["Lobby", "Cutscene", "Question", "Result", "Elimination", "Leaderboard"]
+        },
+        "currentRound": {
+          "type": "integer"
+        },
+        "maxRounds": {
+          "type": "integer"
+        },
+        "activePlayers": {
+          "type": "integer"
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "hostUid",
+        "roomCode",
+        "subject",
+        "fsmState",
+        "currentRound",
+        "maxRounds",
+        "activePlayers",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile containing PII (email) and cumulative stats; readable/writable only by owner."
+    },
+    "/leaderboard/{entryId}": {
+      "schema": { "$ref": "#/entities/LeaderboardEntry" },
+      "description": "Public survivor leaderboard entries isolated from PII; entryId equals user uid."
+    },
+    "/matchRecords/{recordId}": {
+      "schema": { "$ref": "#/entities/MatchRecord" },
+      "description": "Immutable completed survival match analytics records owned by each player."
+    },
+    "/arenas/{arenaId}": {
+      "schema": { "$ref": "#/entities/ArenaRoom" },
+      "description": "Live Arena lobby/state metadata synced via real-time snapshots; strictly excludes question answers."
+    }
+  }
+}

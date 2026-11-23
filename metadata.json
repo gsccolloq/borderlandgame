@@ -1,0 +1,6 @@
+{
+  "name": "Borderland Quiz Arena",
+  "description": "Real-time brutalist cyberpunk survival quiz arena with an AI Dealer, Card Suit mechanics, Visa elimination system, anti-cheat protection, and Game Theory analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

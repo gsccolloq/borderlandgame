@@ -1,0 +1,211 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Blueprints
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'displayName', 'email', 'totalVisaEarned', 'gamesPlayed',
+          'gamesSurvived', 'avgResponseMs', 'tabViolationsTotal', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'email', 'totalVisaEarned', 'gamesPlayed',
+          'gamesSurvived', 'avgResponseMs', 'tabViolationsTotal', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid == request.auth.uid && data.uid == userId && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 64
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.totalVisaEarned is int && data.totalVisaEarned >= 0 && data.totalVisaEarned <= 10000
+        && data.gamesPlayed is int && data.gamesPlayed >= 0 && data.gamesPlayed <= 10000
+        && data.gamesSurvived is int && data.gamesSurvived >= 0 && data.gamesSurvived <= data.gamesPlayed
+        && data.avgResponseMs is number && data.avgResponseMs >= 0 && data.avgResponseMs <= 120000
+        && data.tabViolationsTotal is int && data.tabViolationsTotal >= 0 && data.tabViolationsTotal <= 10000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLeaderboardEntry(data, entryId) {
+      return data.keys().hasAll([
+          'uid', 'displayName', 'bestScore', 'visaBalance', 'survivalRate',
+          'avgResponseMs', 'rankSuit', 'isPublic', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'bestScore', 'visaBalance', 'survivalRate',
+          'avgResponseMs', 'rankSuit', 'isPublic', 'updatedAt'
+        ])
+        && data.uid is string && data.uid == request.auth.uid && data.uid == entryId && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 64
+        && data.bestScore is int && data.bestScore >= 0 && data.bestScore <= 1000000
+        && data.visaBalance is int && data.visaBalance >= 0 && data.visaBalance <= 100
+        && data.survivalRate is number && data.survivalRate >= 0 && data.survivalRate <= 100
+        && data.avgResponseMs is number && data.avgResponseMs >= 0 && data.avgResponseMs <= 120000
+        && data.rankSuit is string && data.rankSuit in ['spades', 'hearts', 'clubs', 'diamonds']
+        && data.isPublic is bool && data.isPublic == true
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMatchRecord(data) {
+      return data.keys().hasAll([
+          'ownerId', 'arenaCode', 'subject', 'status', 'finalVisa', 'score',
+          'accuracyPct', 'avgResponseMs', 'tabSwitches',
+          'spadesScore', 'heartsScore', 'clubsScore', 'diamondsScore', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'arenaCode', 'subject', 'status', 'finalVisa', 'score',
+          'accuracyPct', 'avgResponseMs', 'tabSwitches',
+          'spadesScore', 'heartsScore', 'clubsScore', 'diamondsScore', 'createdAt'
+        ])
+        && data.ownerId is string && data.ownerId == request.auth.uid && isValidId(data.ownerId)
+        && data.arenaCode is string && data.arenaCode.size() >= 2 && data.arenaCode.size() <= 16 && data.arenaCode.matches('^[A-Z0-9\\-]+$')
+        && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 64
+        && data.status is string && data.status in ['survived', 'eliminated', 'disqualified']
+        && data.finalVisa is int && data.finalVisa >= 0 && data.finalVisa <= 100
+        && data.score is int && data.score >= 0 && data.score <= 1000000
+        && data.accuracyPct is number && data.accuracyPct >= 0 && data.accuracyPct <= 100
+        && data.avgResponseMs is number && data.avgResponseMs >= 0 && data.avgResponseMs <= 120000
+        && data.tabSwitches is int && data.tabSwitches >= 0 && data.tabSwitches <= 100
+        && data.spadesScore is number && data.spadesScore >= 0 && data.spadesScore <= 100
+        && data.heartsScore is number && data.heartsScore >= 0 && data.heartsScore <= 100
+        && data.clubsScore is number && data.clubsScore >= 0 && data.clubsScore <= 100
+        && data.diamondsScore is number && data.diamondsScore >= 0 && data.diamondsScore <= 100
+        && data.createdAt is timestamp;
+    }
+
+    function isValidArenaRoom(data) {
+      return data.keys().hasAll([
+          'hostUid', 'roomCode', 'subject', 'fsmState', 'currentRound',
+          'maxRounds', 'activePlayers', 'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'hostUid', 'roomCode', 'subject', 'fsmState', 'currentRound',
+          'maxRounds', 'activePlayers', 'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.hostUid is string && data.hostUid == request.auth.uid && isValidId(data.hostUid)
+        && data.roomCode is string && data.roomCode.size() >= 4 && data.roomCode.size() <= 12 && data.roomCode.matches('^[A-Z0-9\\-]+$')
+        && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 64
+        && data.fsmState is string && data.fsmState in ['Lobby', 'Cutscene', 'Question', 'Result', 'Elimination', 'Leaderboard']
+        && data.currentRound is int && data.currentRound >= 0 && data.currentRound <= 50
+        && data.maxRounds is int && data.maxRounds >= 1 && data.maxRounds <= 50
+        && data.activePlayers is int && data.activePlayers >= 0 && data.activePlayers <= 500
+        && data.isPublic is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // 1. Private Survivor Profiles (PII isolated)
+    match /users/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'totalVisaEarned', 'gamesPlayed', 'gamesSurvived',
+          'avgResponseMs', 'tabViolationsTotal', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // 2. Public Survivor Leaderboard (No PII)
+    match /leaderboard/{entryId} {
+      allow get: if isSignedIn() && isValidId(entryId) && existing().isPublic == true;
+      allow list: if isSignedIn() && resource.data.isPublic == true;
+      allow create: if isVerifiedUser()
+        && isValidId(entryId)
+        && isOwner(entryId)
+        && isValidLeaderboardEntry(incoming(), entryId)
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(entryId)
+        && isOwner(entryId)
+        && isValidLeaderboardEntry(incoming(), entryId)
+        && incoming().uid == existing().uid
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'bestScore', 'visaBalance', 'survivalRate',
+          'avgResponseMs', 'rankSuit', 'isPublic', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // 3. Immutable Match Analytics Records
+    match /matchRecords/{recordId} {
+      allow get: if isSignedIn() && isValidId(recordId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(recordId)
+        && isValidMatchRecord(incoming())
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // 4. Live Arena Rooms Metadata (Zero Answer Keys)
+    match /arenas/{arenaId} {
+      allow get: if isSignedIn() && isValidId(arenaId) && (existing().isPublic == true || existing().hostUid == request.auth.uid);
+      allow list: if isSignedIn() && resource.data.isPublic == true;
+      allow create: if isVerifiedUser()
+        && isValidId(arenaId)
+        && isValidArenaRoom(incoming())
+        && incoming().fsmState == 'Lobby'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(arenaId)
+        && isValidArenaRoom(incoming())
+        && existing().hostUid == request.auth.uid
+        && existing().fsmState != 'Leaderboard'
+        && incoming().hostUid == existing().hostUid
+        && incoming().roomCode == existing().roomCode
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['fsmState', 'currentRound', 'activePlayers', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['activePlayers', 'updatedAt'])
+        );
+      allow delete: if false;
+    }
+  }
+}
