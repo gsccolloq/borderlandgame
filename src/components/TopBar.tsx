@@ -88,16 +88,19 @@ export function TopBar() {
     navItems.push({ id: 'admin', label: 'Quản trị Hệ thống' });
   }
 
+  // Super Admin / Host check for API key settings button
+  const isHostOrAdmin = Boolean(user && (userRole === 'admin' || userRole === 'host'));
+
   return (
     <>
       <header className="sticky top-0 z-30 border-b border-white/10 bg-[#090A0D]/95 backdrop-blur-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-6">
           {/* Zone 1: Single-line Brand Wordmark & Connection Status */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
               onClick={() => setActiveTab('arena')}
-              className="font-display text-2xl font-extrabold tracking-tight text-white whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-red-500"
+              className="font-display text-xl sm:text-2xl font-extrabold tracking-tight text-white whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-red-500"
             >
               Borderland Arena
             </button>
@@ -136,39 +139,41 @@ export function TopBar() {
           </nav>
 
           {/* Zone 3: Role Indicator & Auth Action & Settings (API Key) */}
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-            {/* Settings (API Key) Button - Turns green 'Đã kết nối API Key' when saved */}
-            <button
-              type="button"
-              onClick={() => setGeminiModalOpen(true)}
-              className={`flex items-center gap-2 px-3 py-1.5 border transition-all cursor-pointer group ${
-                hasApiKey
-                  ? 'border-emerald-500/70 bg-emerald-950/35 hover:bg-emerald-900/40 text-white shadow-[0_0_12px_rgba(16,185,129,0.25)]'
-                  : 'border-red-500/70 bg-red-950/35 hover:bg-red-900/40 text-white shadow-[0_0_10px_rgba(239,68,68,0.2)]'
-              }`}
-              title="Thiết lập Model & Google Gemini API Key"
-            >
-              <Key
-                className={`w-3.5 h-3.5 group-hover:rotate-12 transition-transform shrink-0 ${
-                  hasApiKey ? 'text-emerald-400' : 'text-red-500'
+          <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
+            {/* Settings (API Key) Button - CHỈ hiển thị với Host/Admin */}
+            {isHostOrAdmin && (
+              <button
+                type="button"
+                onClick={() => setGeminiModalOpen(true)}
+                className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 sm:py-1.5 border transition-all cursor-pointer group shrink-0 ${
+                  hasApiKey
+                    ? 'border-emerald-500/70 bg-emerald-950/35 hover:bg-emerald-900/40 text-white shadow-[0_0_12px_rgba(16,185,129,0.25)]'
+                    : 'border-red-500/70 bg-red-950/35 hover:bg-red-900/40 text-white shadow-[0_0_10px_rgba(239,68,68,0.2)]'
                 }`}
-              />
-              <div className="flex flex-col text-left">
-                <span className="font-mono text-xs font-bold text-white leading-tight whitespace-nowrap">
-                  Settings (API Key)
-                </span>
-                {hasApiKey ? (
-                  <span className="text-[10px] text-emerald-400 font-bold leading-none whitespace-nowrap flex items-center gap-1">
-                    <CheckCircle2 className="w-2.5 h-2.5" />
-                    Đã kết nối API Key
+                title="Thiết lập Model & Google Gemini API Key"
+              >
+                <Key
+                  className={`w-3.5 h-3.5 group-hover:rotate-12 transition-transform shrink-0 ${
+                    hasApiKey ? 'text-emerald-400' : 'text-red-500'
+                  }`}
+                />
+                <div className="flex flex-col text-left">
+                  <span className="font-mono text-[11px] sm:text-xs font-bold text-white leading-tight whitespace-nowrap">
+                    Settings (API Key)
                   </span>
-                ) : (
-                  <span className="text-[10px] text-red-400 font-bold leading-none whitespace-nowrap animate-pulse">
-                    Lấy API key để sử dụng app
-                  </span>
-                )}
-              </div>
-            </button>
+                  {hasApiKey ? (
+                    <span className="text-[9px] sm:text-[10px] text-emerald-400 font-bold leading-none whitespace-nowrap flex items-center gap-1">
+                      <CheckCircle2 className="w-2.5 h-2.5" />
+                      Đã kết nối API Key
+                    </span>
+                  ) : (
+                    <span className="text-[9px] sm:text-[10px] text-red-400 font-bold leading-none whitespace-nowrap animate-pulse">
+                      Cài đặt Gemini Key
+                    </span>
+                  )}
+                </div>
+              </button>
+            )}
 
             {user && (
               <div className="hidden sm:flex items-center gap-1.5 font-mono text-[11px]">
@@ -199,7 +204,7 @@ export function TopBar() {
               type="button"
               disabled={authBusy}
               onClick={handleAuthClick}
-              className="px-4 py-2 text-xs font-semibold tracking-wide bg-white text-[#090A0D] hover:bg-slate-200 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-red-500"
+              className="px-2.5 sm:px-4 py-1.5 sm:py-2 text-[11px] sm:text-xs font-semibold tracking-wide bg-white text-[#090A0D] hover:bg-slate-200 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-red-500"
             >
               {authBusy
                 ? 'Đang kết nối...'
