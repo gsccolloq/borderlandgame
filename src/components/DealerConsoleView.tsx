@@ -9,6 +9,7 @@ import {
   AlertCircle,
   RefreshCw,
   Ban,
+  Play,
 } from 'lucide-react';
 import {
   ARENA_SUBJECTS,
@@ -55,6 +56,8 @@ export function DealerConsoleView() {
   const aiSteps = useGameStore((s) => s.aiSteps);
   const aiActiveModel = useGameStore((s) => s.aiActiveModel);
   const setGeminiModalOpen = useGameStore((s) => s.setGeminiModalOpen);
+  const startGame = useGameStore((s) => s.startGame);
+  const nextPhase = useGameStore((s) => s.nextPhase);
 
   const [subject, setSubject] = useState<string>(room?.subject || ARENA_SUBJECTS[0]);
   const [suit, setSuit] = useState<CardSuit>('diamonds');
@@ -123,6 +126,71 @@ export function DealerConsoleView() {
               </div>
             );
           })}
+        </div>
+      </section>
+
+      {/* Match Control Panel for Host */}
+      <section className="border border-red-500/40 bg-[#12151C] p-5 sm:p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
+              <h2 className="font-display text-2xl font-bold text-white">
+                Điều Phối & Bắt Đầu Trận Đấu
+              </h2>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              {room
+                ? `Mã phòng: ${room.roomCode} · Trạng thái: ${FSM_LABELS_VI[room.fsmState]} · Người chơi: ${room.players.length} người · Không bắt buộc API Key (sử dụng 24 câu hỏi mặc định & thoại Quản trò chuẩn)`
+                : 'Chưa có phòng đấu đang hoạt động. Tạo phòng tại tab Đấu trường hoặc tham gia mã phòng.'}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {room && room.fsmState === 'Lobby' && (
+              room.players.length >= 1 ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await startGame();
+                    setActiveTab('arena');
+                  }}
+                  className="h-12 px-6 bg-red-600 hover:bg-red-500 text-white text-xs font-bold tracking-wider uppercase flex items-center gap-2 transition-all shadow-[0_0_15px_rgba(239,68,68,0.4)] cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <Play className="w-4 h-4 fill-current" />
+                  <span>Bắt đầu Trận đấu ({room.players.length} người)</span>
+                </button>
+              ) : (
+                <div className="h-12 px-4 border border-amber-500/50 bg-amber-950/30 text-amber-300 text-xs font-medium flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Cần ít nhất 1 người chơi trong phòng để bắt đầu</span>
+                </div>
+              )
+            )}
+
+            {room && room.fsmState === 'Result' && (
+              <button
+                type="button"
+                onClick={async () => {
+                  await nextPhase();
+                  setActiveTab('arena');
+                }}
+                className="h-12 px-6 bg-red-600 hover:bg-red-500 text-white text-xs font-bold tracking-wider uppercase flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <span>Chuyển Sang Vòng Tiếp Theo ({room.currentRound + 1}/{room.totalRounds})</span>
+              </button>
+            )}
+
+            {room && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('arena')}
+                className="h-12 px-5 border border-white/20 hover:border-white/50 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <span>Vào Đấu Trường Trực Tiếp</span>
+              </button>
+            )}
+          </div>
         </div>
       </section>
 
