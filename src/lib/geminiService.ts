@@ -513,3 +513,119 @@ BẮT BUỘC trả về đúng định dạng JSON bằng tiếng Việt:
 
   throw new Error(`[Toàn bộ Model thất bại] Lỗi nguyên văn từ API: ${lastError}`);
 }
+
+/**
+ * Generate a complete custom deck of multiple-choice questions from a user-specified topic/prompt using Gemini AI.
+ * Strict JSON schema adherence, fallback model chain, 4 suits rotation.
+ */
+export async function forgeQuestionDeckFromTopic(params: {
+  topicPrompt: string;
+  count?: number;
+  apiKey?: string;
+  onProgress?: (message: string) => void;
+}): Promise<ArenaQuestion[]> {
+  const { topicPrompt, count = 8, onProgress } = params;
+  const apiKey = params.apiKey || getStoredApiKey();
+  if (!apiKey) {
+    throw new Error('Chưa cài đặt Gemini API Key. Vui lòng vào Cài đặt để thêm API Key hoặc tải đề bằng Excel.');
+  }
+
+  const preferredModel = getStoredModel();
+  const modelsToTry = [
+    preferredModel,
+    'gemini-2.5-flash',
+    'gemini-3-flash-preview',
+    'gemini-3-pro-preview',
+  ].filter((m, idx, arr) => arr.indexOf(m) === idx);
+
+  const promptText = `
+Hãy đóng vai AI Quản trò của Borderland Quiz Arena và soạn một bộ ${count} câu hỏi trắc nghiệm chất lượng cao, bám sát tuyệt đối chủ đề/yêu cầu sau của người dùng:
+"${topicPrompt}"
+
+Yêu cầu định dạng và quy tắc:
+1. Trả về ĐÚNG MỘT MẢNG JSON các câu hỏi (không kèm văn bản giải thích thừa bên ngoài):
+[
+  {
+    "prompt": "Nội dung câu hỏi trắc nghiệm rõ ràng, sâu sắc",
+    "options": ["Lựa chọn A", "Lựa chọn B", "Lựa chọn C", "Lựa chọn D"],
+    "correctIndex": 0,
+    "suit": "spades",
+    "difficulty": 5,
+    "explanation": "Giải thích ngắn gọn 1-2 câu vì sao đáp án này đúng",
+    "dealerHint": "Lời gợi ý hoặc cảnh báo sắc lạnh của Quản trò"
+  }
+]
+2. Các câu hỏi phải phân bổ đa dạng qua 4 chất bài (spades, hearts, clubs, diamonds) và tăng dần độ khó (từ 3 lên đến 9).
+3. Mỗi câu hỏi PHẢI có đúng 4 phương án lựa chọn khác biệt và chính xác.
+4. Ngôn ngữ hoàn toàn bằng tiếng Việt.
+`;
+
+  let lastError = '';
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const currentModel = modelsToTry[i];
+    onProgress?.(`AI đang soạn bộ câu hỏi với model ${currentModel}...`);
+
+    try {
+      const raw = await callGeminiRestApi({
+        apiKey,
+        model: currentModel,
+        prompt: promptText,
+        systemInstruction: DEALER_SYSTEM_INSTRUCTION,
+      });
+
+      let cleaned = raw.trim();
+      if (cleaned.startsWith('```json')) {
+        cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      } else if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      }
+
+      const parsedArray = JSON.parse(cleaned);
+      if (!Array.isArray(parsedArray) || parsedArray.length === 0) {
+        throw new Error('Dữ liệu AI trả về không phải là mảng câu hỏi hợp lệ.');
+      }
+
+      const suitsList: CardSuit[] = ['spades', 'diamonds', 'hearts', 'clubs'];
+      const timeLimitsBySuit: Record<CardSuit, number> = {
+        spades: 15000,
+        hearts: 20000,
+        diamonds: 25000,
+        clubs: 30000,
+      };
+
+      const deck: ArenaQuestion[] = parsedArray.map((q: any, idx: number) => {
+        const suit: CardSuit = (['spades', 'hearts', 'clubs', 'diamonds'].includes(q.suit) ? q.suit : suitsList[idx % 4]) as CardSuit;
+        const options: [string, string, string, string] = Array.isArray(q.options) && q.options.length >= 4
+          ? [String(q.options[0]), String(q.options[1]), String(q.options[2]), String(q.options[3])]
+          : ['Lựa chọn A', 'Lựa chọn B', 'Lựa chọn C', 'Lựa chọn D'];
+        const correctIndex = typeof q.correctIndex === 'number' && q.correctIndex >= 0 && q.correctIndex < 4
+          ? q.correctIndex
+          : 0;
+
+        return {
+          id: `ai-topic-${Date.now()}-${idx + 1}`,
+          subject: topicPrompt.slice(0, 40),
+          suit,
+          cardRank: String(Math.min(10, Math.max(1, q.difficulty || (idx + 3)))),
+          difficulty: Math.min(10, Math.max(1, q.difficulty || (idx + 3))),
+          topic: topicPrompt.slice(0, 50),
+          prompt: String(q.prompt || `Câu hỏi thử thách ${idx + 1}`),
+          options,
+          correctIndex,
+          explanation: String(q.explanation || 'Đáp án chính xác theo phân tích của Quản trò.'),
+          dealerHint: q.dealerHint ? String(q.dealerHint) : undefined,
+          timeLimitMs: timeLimitsBySuit[suit] || 20000,
+          source: 'gemini',
+        };
+      });
+
+      return deck;
+    } catch (err) {
+      lastError = extractRawApiError(err);
+      onProgress?.(`Model ${currentModel} gặp sự cố, chuyển đổi model tiếp theo...`);
+    }
+  }
+
+  throw new Error(`[AI Soạn Đề Thất Bại]: ${lastError}`);
+}
+
