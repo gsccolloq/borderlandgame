@@ -3,9 +3,11 @@ import { motion } from 'motion/react';
 import { SUIT_META } from '../types/game';
 import { useGameStore } from '../store/gameStore';
 import { SuitIcon } from './SuitIcon';
+import spadesCardArt from '../assets/images/suit_spades_card_1795409270964.jpg';
+import heartsCardArt from '../assets/images/suit_hearts_card_1795409273659.jpg';
 
-const SPADES_CARD_ART = '/src/assets/images/suit_spades_card_1795409270964.jpg';
-const HEARTS_CARD_ART = '/src/assets/images/suit_hearts_card_1795409273659.jpg';
+const SPADES_CARD_ART = spadesCardArt;
+const HEARTS_CARD_ART = heartsCardArt;
 
 export function CutsceneView() {
   const room = useGameStore((s) => s.room);
