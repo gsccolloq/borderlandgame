@@ -41,6 +41,16 @@ export function TopBar() {
         typeof window !== 'undefined' ? window.location.hostname : 'borderlandgame-five.vercel.app';
 
       if (
+        errStr.includes('api-key-not-valid') ||
+        errStr.includes('invalid-api-key') ||
+        errStr.includes('Firebase API Key không hợp lệ')
+      ) {
+        setAuthErrorModal({
+          title: 'Khóa API Firebase không hợp lệ (API Key Invalid)',
+          message: 'Khóa VITE_FIREBASE_API_KEY được truyền vào từ Vercel không khớp hoặc bị thiếu ký tự.',
+          instruction: `Cách khắc phục:\n1. Mở Firebase Console > Chọn dự án > Bấm vào biểu tượng bánh răng (Project settings).\n2. Tại tab General, cuộn xuống mục "Your apps" (Web apps) để copy mã "apiKey" (bắt đầu bằng AIzaSy...).\n3. Mở Vercel Dashboard > Project Settings > Environment Variables.\n4. Cập nhật lại giá trị cho VITE_FIREBASE_API_KEY (không chứa khoảng trắng ở 2 đầu) rồi bấm Redeploy.`,
+        });
+      } else if (
         errStr.includes('unauthorized-domain') ||
         errStr.includes('chưa được cấp phép') ||
         errStr.includes(domain)
