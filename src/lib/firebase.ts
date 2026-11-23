@@ -38,19 +38,28 @@ import type {
   UserRole,
 } from '../types/game';
 
-const metaEnv =
-  typeof import.meta !== 'undefined' && import.meta.env
-    ? import.meta.env
-    : ({} as Record<string, string>);
+// Read Vite environment variables directly with static string property access so Vite replaces them at build time
+const envApiKey = (import.meta.env.VITE_FIREBASE_API_KEY || '').trim();
+const envAuthDomain = (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '').trim();
+const envProjectId = (import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim();
+const envStorageBucket = (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '').trim();
+const envMessagingSenderId = (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '').trim();
+const envAppId = (import.meta.env.VITE_FIREBASE_APP_ID || '').trim();
+const envMeasurementId = (import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || '').trim();
+const envFirestoreDatabaseId = (import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID || '').trim();
+
+// Determine if user provided their own Firebase project via Vercel env vars
+const isUsingCustomEnv = Boolean(envApiKey && envProjectId);
 
 export const activeFirebaseConfig = {
-  apiKey: metaEnv.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
-  authDomain: metaEnv.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
-  projectId: metaEnv.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
-  storageBucket: metaEnv.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
-  messagingSenderId: metaEnv.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
-  appId: metaEnv.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
-  firestoreDatabaseId: metaEnv.VITE_FIREBASE_FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId || '(default)',
+  apiKey: envApiKey || (firebaseConfig.apiKey || '').trim(),
+  authDomain: envAuthDomain || (firebaseConfig.authDomain || '').trim(),
+  projectId: envProjectId || (firebaseConfig.projectId || '').trim(),
+  storageBucket: envStorageBucket || (firebaseConfig.storageBucket || '').trim(),
+  messagingSenderId: envMessagingSenderId || (firebaseConfig.messagingSenderId || '').trim(),
+  appId: envAppId || (firebaseConfig.appId || '').trim(),
+  measurementId: envMeasurementId || (firebaseConfig.measurementId || '').trim(),
+  firestoreDatabaseId: envFirestoreDatabaseId || (isUsingCustomEnv ? '(default)' : (firebaseConfig.firestoreDatabaseId || '(default)').trim()),
 };
 
 const app = initializeApp(activeFirebaseConfig);
@@ -128,7 +137,7 @@ export async function testFirestoreConnection(): Promise<void> {
 void testFirestoreConnection();
 
 export const ADMIN_EMAIL = (
-  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_ADMIN_EMAIL) ||
+  (import.meta.env.VITE_ADMIN_EMAIL || '') ||
   'gsc.colloq@gmail.com'
 ).toLowerCase().trim();
 
@@ -143,6 +152,11 @@ export async function signInWithGoogle(): Promise<User> {
     const currentDomain =
       typeof window !== 'undefined' ? window.location.hostname : 'borderlandgame-five.vercel.app';
 
+    if (code === 'auth/api-key-not-valid' || code.includes('api-key-not-valid') || code.includes('invalid-api-key')) {
+      const msg = `Mã Firebase API Key không hợp lệ! Vui lòng kiểm tra lại biến VITE_FIREBASE_API_KEY trong Vercel Settings > Environment Variables (lấy từ Firebase Console > Project settings > Web apps).`;
+      console.error(msg, error);
+      throw new Error(msg);
+    }
     if (code === 'auth/unauthorized-domain') {
       const msg = `Tên miền [${currentDomain}] chưa được cấp phép trong Firebase! Vui lòng vào Firebase Console > Authentication > Settings > Authorized domains và thêm tên miền "${currentDomain}".`;
       console.error(msg, error);
