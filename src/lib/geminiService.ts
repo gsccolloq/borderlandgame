@@ -63,8 +63,8 @@ export function getStoredApiKey(): string {
     const local = localStorage.getItem(API_KEY_STORAGE_KEY);
     if (local && local.trim()) return local.trim();
   }
-  const envKey = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_GEMINI_API_KEY;
-  return (envKey || '').trim();
+  const envKey = (import.meta.env.VITE_GEMINI_API_KEY || '').trim();
+  return envKey;
 }
 
 export function setStoredApiKey(key: string): void {
