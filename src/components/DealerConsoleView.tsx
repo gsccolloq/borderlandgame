@@ -86,9 +86,12 @@ export function DealerConsoleView() {
             Bảng Điều Khiển Quản Trò
           </h1>
         </div>
-        <div className="font-mono text-xs text-slate-400 tabular-nums">
-          Kết nối: {wsConnected ? `Ổn định (${latencyMs}ms)` : 'Mất kết nối'} · Phòng:{' '}
-          {room ? room.roomCode : 'Chưa tạo'}
+        <div className="font-mono text-xs text-slate-400 tabular-nums flex items-center gap-2">
+          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 border ${wsConnected ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-400' : 'border-amber-500/40 bg-amber-950/30 text-amber-400'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+            <span>{wsConnected ? 'Đã kết nối Firestore' : 'Đang kết nối...'}</span>
+          </span>
+          <span>· Phòng: {room ? room.roomCode : 'Chưa tạo'}</span>
         </div>
       </div>
 
