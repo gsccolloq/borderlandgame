@@ -189,7 +189,13 @@ function ArenaAppShell() {
   const renderArenaFsm = () => {
     if (!room || room.fsmState === 'Lobby') return <LobbyView />;
     if (room.fsmState === 'Cutscene') return <CutsceneView />;
-    if (room.fsmState === 'Question') return <QuestionView />;
+    if (
+      room.fsmState === 'Question' ||
+      room.fsmState === 'visa_extension_registration' ||
+      room.fsmState === 'visa_extension_quiz'
+    ) {
+      return <QuestionView />;
+    }
     if (room.fsmState === 'Result') return <ResultView />;
     if (room.fsmState === 'Elimination') return <EliminationView />;
     return <LeaderboardView />;
