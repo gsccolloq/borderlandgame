@@ -9,7 +9,7 @@ import {
   serverTimestamp,
   type Unsubscribe,
 } from 'firebase/firestore';
-import { db, testFirestoreConnection } from '../lib/firebase';
+import { db, testFirestoreConnection, sanitizeForFirestore } from '../lib/firebase';
 import type {
   ArenaQuestion,
   ArenaRoomSnapshot,
@@ -357,9 +357,8 @@ function createEmptySuitStats(): PlayerState['suitStats'] {
 }
 
 function createPlayerInternal(id: string, name: string, uid?: string): PlayerState {
-  return {
+  const player: PlayerState = {
     id,
-    uid,
     name: name.trim().slice(0, 32) || 'Người chơi',
     visa: 3,
     maxVisa: 5,
@@ -373,6 +372,10 @@ function createPlayerInternal(id: string, name: string, uid?: string): PlayerSta
     topicStats: {},
     answerLog: [],
   };
+  if (uid && uid.trim()) {
+    player.uid = uid.trim();
+  }
+  return player;
 }
 
 function generateRoomCodeInternal(): string {
@@ -392,7 +395,7 @@ function toClientQuestionInternal(
   isRevival: boolean
 ): ClientQuestion | null {
   if (!q) return null;
-  return {
+  const clientQ: ClientQuestion = {
     id: q.id,
     roundNumber,
     totalRounds,
@@ -405,10 +408,13 @@ function toClientQuestionInternal(
     timeLimitMs: q.timeLimitMs,
     startedAt,
     isRevival,
-    dealerHint: q.dealerHint,
     wagerAllowed: q.suit === 'hearts' && !isRevival,
     source: q.source,
   };
+  if (q.dealerHint) {
+    clientQ.dealerHint = q.dealerHint;
+  }
+  return clientQ;
 }
 
 // === FIRESTORE AUTHORITATIVE REAL-TIME ARENA ENGINE (SERVERLESS) ===
@@ -460,7 +466,7 @@ async function createFirestoreArenaInternal(params: {
     updatedAt: serverTimestamp(),
   };
 
-  await setDoc(doc(db, 'arenas', roomCode), initialDoc);
+  await setDoc(doc(db, 'arenas', roomCode), sanitizeForFirestore(initialDoc));
   return roomCode;
 }
 
@@ -484,7 +490,9 @@ async function joinFirestoreArenaInternal(params: {
 
   if (existingIdx >= 0) {
     players[existingIdx].name = params.playerName.trim().slice(0, 32) || players[existingIdx].name;
-    if (params.uid) players[existingIdx].uid = params.uid;
+    if (params.uid && params.uid.trim()) {
+      players[existingIdx].uid = params.uid.trim();
+    }
   } else {
     players.push(createPlayerInternal(params.playerId, params.playerName, params.uid));
   }
@@ -497,12 +505,12 @@ async function joinFirestoreArenaInternal(params: {
     action: 'briefing',
   };
 
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     players,
     dealerLogs: [joinLog, ...(data.dealerLogs || [])].slice(0, 24),
     serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
+  }));
 
   return true;
 }
@@ -561,23 +569,26 @@ async function startFirestoreArenaInternal(roomCode: string): Promise<void> {
     ? data.fullDeck
     : getQuestionsForSubjectInternal(data.subject);
 
-  const resetPlayers = (data.players || []).map((p) => ({
-    ...p,
-    visa: 3,
-    score: 0,
-    streak: 0,
-    status: 'active' as const,
-    tabSwitches: 0,
-    hasAnsweredCurrent: false,
-    revivalUsed: false,
-    lastCorrect: undefined,
-    lastResponseMs: undefined,
-    lastVisaDelta: undefined,
-    lastScoreDelta: undefined,
-    suitStats: createEmptySuitStats(),
-    topicStats: {},
-    answerLog: [],
-  }));
+  const resetPlayers = (data.players || []).map((p) => {
+    const cleaned: PlayerState = {
+      ...p,
+      visa: 3,
+      score: 0,
+      streak: 0,
+      status: 'active' as const,
+      tabSwitches: 0,
+      hasAnsweredCurrent: false,
+      revivalUsed: false,
+      suitStats: createEmptySuitStats(),
+      topicStats: {},
+      answerLog: [],
+    };
+    delete cleaned.lastCorrect;
+    delete cleaned.lastResponseMs;
+    delete cleaned.lastVisaDelta;
+    delete cleaned.lastScoreDelta;
+    return cleaned;
+  });
 
   const firstQuestion = deck[0];
   const suitBrief: Record<CardSuit, string> = {
@@ -596,7 +607,7 @@ async function startFirestoreArenaInternal(roomCode: string): Promise<void> {
     action: 'briefing',
   };
 
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     fsmState: 'Cutscene',
     currentRound: 1,
     totalRounds: deck.length,
@@ -614,7 +625,7 @@ async function startFirestoreArenaInternal(roomCode: string): Promise<void> {
     laserStrike: false,
     serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
+  }));
 
   setTimeout(async () => {
     try {
@@ -626,7 +637,7 @@ async function startFirestoreArenaInternal(roomCode: string): Promise<void> {
       const startedAt = Date.now();
       const liveClientQ = toClientQuestionInternal(firstQuestion, 1, deck.length, startedAt, false);
 
-      await updateDoc(ref, {
+      await updateDoc(ref, sanitizeForFirestore({
         fsmState: 'Question',
         activeQuestion: liveClientQ,
         questionStartedAt: startedAt,
@@ -634,7 +645,7 @@ async function startFirestoreArenaInternal(roomCode: string): Promise<void> {
         laserStrike: false,
         serverTime: startedAt,
         updatedAt: serverTimestamp(),
-      });
+      }));
     } catch (e) {
       console.error('Error transitioning to Question phase:', e);
     }
@@ -815,7 +826,7 @@ async function resolveFirestoreRoundInternal(roomCode: string): Promise<void> {
     action: newlyEliminated > 0 ? 'execution' : difficultyAction === 'escalate' ? 'escalate' : 'briefing',
   };
 
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     fsmState: nextState,
     lastReveal: reveal,
     players: updatedPlayers,
@@ -824,7 +835,7 @@ async function resolveFirestoreRoundInternal(roomCode: string): Promise<void> {
     dealerLogs: [revealLog, ...(data.dealerLogs || [])].slice(0, 24),
     serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
+  }));
 }
 
 async function submitFirestoreAnswerInternal(params: {
@@ -865,11 +876,11 @@ async function submitFirestoreAnswerInternal(params: {
     p.id === params.playerId ? { ...p, hasAnsweredCurrent: true } : p
   );
 
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     submissions: newSubmissions,
     players: updatedPlayers,
     updatedAt: serverTimestamp(),
-  });
+  }));
 
   const eligiblePlayers = updatedPlayers.filter((p) =>
     data.isRevivalActive
@@ -901,14 +912,14 @@ async function nextPhaseFirestoreArenaInternal(roomCode: string): Promise<void> 
       action: 'briefing',
     };
 
-    await updateDoc(ref, {
+    await updateDoc(ref, sanitizeForFirestore({
       fsmState: 'Leaderboard',
       laserStrike: false,
       dealerMessage: endLog.message,
       dealerLogs: [endLog, ...(data.dealerLogs || [])].slice(0, 24),
       serverTime: Date.now(),
       updatedAt: serverTimestamp(),
-    });
+    }));
     return;
   }
 
@@ -937,7 +948,7 @@ async function nextPhaseFirestoreArenaInternal(roomCode: string): Promise<void> 
     hasAnsweredCurrent: false,
   }));
 
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     fsmState: 'Cutscene',
     currentRound: nextRoundNumber,
     activeQuestion: cutsceneClientQ,
@@ -950,7 +961,7 @@ async function nextPhaseFirestoreArenaInternal(roomCode: string): Promise<void> 
     players: resetAnswerFlags,
     serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
+  }));
 
   setTimeout(async () => {
     try {
@@ -962,7 +973,7 @@ async function nextPhaseFirestoreArenaInternal(roomCode: string): Promise<void> 
       const startedAt = Date.now();
       const liveClientQ = toClientQuestionInternal(nextQ, nextRoundNumber, data.totalRounds, startedAt, false);
 
-      await updateDoc(ref, {
+      await updateDoc(ref, sanitizeForFirestore({
         fsmState: 'Question',
         activeQuestion: liveClientQ,
         questionStartedAt: startedAt,
@@ -970,7 +981,7 @@ async function nextPhaseFirestoreArenaInternal(roomCode: string): Promise<void> 
         laserStrike: false,
         serverTime: startedAt,
         updatedAt: serverTimestamp(),
-      });
+      }));
     } catch (e) {
       console.error('Error transitioning to Question phase:', e);
     }
@@ -995,7 +1006,7 @@ async function launchRevivalFirestoreArenaInternal(roomCode: string): Promise<vo
     action: 'revival',
   };
 
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     fsmState: 'Question',
     isRevivalActive: true,
     revivalOffered: true,
@@ -1008,7 +1019,7 @@ async function launchRevivalFirestoreArenaInternal(roomCode: string): Promise<vo
     dealerLogs: [revivalLog, ...(data.dealerLogs || [])].slice(0, 24),
     serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
+  }));
 }
 
 async function reportTabViolationFirestoreInternal(roomCode: string, playerId: string): Promise<void> {
@@ -1021,19 +1032,19 @@ async function reportTabViolationFirestoreInternal(roomCode: string, playerId: s
     p.id === playerId ? { ...p, tabSwitches: p.tabSwitches + 1 } : p
   );
 
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     players,
     updatedAt: serverTimestamp(),
-  });
+  }));
 }
 
 async function setCustomDeckFirestoreArenaInternal(roomCode: string, deck: ArenaQuestion[]): Promise<void> {
   const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     fullDeck: deck,
     totalRounds: deck.length,
     updatedAt: serverTimestamp(),
-  });
+  }));
 }
 
 async function injectQuestionFirestoreArenaInternal(
@@ -1063,12 +1074,12 @@ async function injectQuestionFirestoreArenaInternal(
     action: 'briefing',
   };
 
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     fullDeck: currentDeck,
     totalRounds: currentDeck.length,
     dealerLogs: [log, ...(data.dealerLogs || [])].slice(0, 24),
     updatedAt: serverTimestamp(),
-  });
+  }));
 }
 
 interface GameStoreState {
