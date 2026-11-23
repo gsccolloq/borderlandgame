@@ -381,14 +381,21 @@ export function LobbyView() {
 
                 <div className="flex flex-col sm:flex-row gap-3 pt-2">
                   {isHostOfCurrentRoom ? (
-                    <button
-                      type="button"
-                      onClick={startGame}
-                      className="flex-1 h-12 px-5 bg-red-600 hover:bg-red-500 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <Play className="w-4 h-4" />
-                      <span>Bắt đầu Trò chơi (Chủ phòng)</span>
-                    </button>
+                    room.players && room.players.length >= 1 ? (
+                      <button
+                        type="button"
+                        onClick={startGame}
+                        className="flex-1 h-12 px-5 bg-red-600 hover:bg-red-500 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer shadow-[0_0_15px_rgba(239,68,68,0.35)]"
+                      >
+                        <Play className="w-4 h-4 fill-current" />
+                        <span>Bắt đầu Trận đấu ({room.players.length} người chơi)</span>
+                      </button>
+                    ) : (
+                      <div className="flex-1 h-12 px-4 border border-amber-500/40 bg-amber-950/20 text-amber-300 text-xs font-medium flex items-center justify-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                        <span>Cần ít nhất 1 người chơi trong phòng để bắt đầu trận đấu.</span>
+                      </div>
+                    )
                   ) : (
                     <div className="flex-1 h-12 px-5 border border-white/15 bg-[#090A0D] text-slate-400 text-xs font-medium flex items-center justify-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
