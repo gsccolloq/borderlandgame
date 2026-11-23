@@ -72,7 +72,9 @@ export type FsmState =
   | 'Question'
   | 'Result'
   | 'Elimination'
-  | 'Leaderboard';
+  | 'Leaderboard'
+  | 'visa_extension_registration'
+  | 'visa_extension_quiz';
 
 export type PlayerStatus = 'active' | 'eliminated' | 'revived' | 'disqualified';
 
@@ -156,6 +158,21 @@ export interface PlayerState {
   suitStats: Record<CardSuit, SuitMetric>;
   topicStats: Record<string, TopicMetric>;
   answerLog: QuestionLogEntry[];
+  currentQuestionIndex?: number;
+  completedQuestions?: boolean;
+}
+
+export interface VisaExtensionConfig {
+  ratio: number;
+  maxSlots: number;
+  visaReward: number;
+  question: ArenaQuestion;
+}
+
+export interface RegisteredExtensionPlayer {
+  playerId: string;
+  name: string;
+  timestamp: number;
 }
 
 export interface DealerLogEntry {
@@ -182,6 +199,13 @@ export interface ArenaRoomSnapshot {
   players: PlayerState[];
   hostPlayerId: string;
   serverTime: number;
+  fullDeck?: ArenaQuestion[];
+  visaExtensionConfig?: VisaExtensionConfig;
+  registrationStartedAt?: number;
+  registrationEndsAt?: number;
+  registeredPlayers?: RegisteredExtensionPlayer[];
+  qualifiedPlayerIds?: string[];
+  extensionSubmissions?: Record<string, { optionIndex: number; isCorrect: boolean; timestamp: number }>;
 }
 
 export interface LeaderboardRecord {
@@ -307,6 +331,8 @@ export const FSM_LABELS_VI: Record<FsmState, string> = {
   Result: 'Kết quả',
   Elimination: 'Thanh trừng',
   Leaderboard: 'Bảng xếp hạng',
+  visa_extension_registration: 'Đua tốc độ Gia hạn Visa (10s)',
+  visa_extension_quiz: 'Vòng thi Gia hạn Visa',
 };
 
 export function getSubjectLabelVi(subject: string): string {
