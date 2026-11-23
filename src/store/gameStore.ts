@@ -205,10 +205,6 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
           ? user.displayName.slice(0, 32)
           : state.playerName,
     })),
-        user?.displayName && state.playerName === 'Người chơi 01'
-          ? user.displayName.slice(0, 32)
-          : state.playerName,
-    })),
 
   firestoreLeaderboard: [],
   setFirestoreLeaderboard: (rows) => set({ firestoreLeaderboard: rows }),
