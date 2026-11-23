@@ -1,8 +1,3 @@
-/**
- * Firestore Real-time Serverless Arena Engine
- * Fully replaces WebSocket (/ws) with Cloud Firestore onSnapshot for 100% Serverless Vercel deployment.
- */
-
 import {
   doc,
   setDoc,
@@ -12,8 +7,7 @@ import {
   serverTimestamp,
   type Unsubscribe,
 } from 'firebase/firestore';
-import { db } from './firebase';
-import { getQuestionsForSubject, type ServerQuestion } from './questionBank';
+import { db, sanitizeForFirestore } from './firebase';
 import type {
   ArenaQuestion,
   ArenaRoomSnapshot,
@@ -48,9 +42,150 @@ export interface FirestoreArenaDoc {
   laserStrike?: boolean;
   updatedAt: unknown;
   createdAt: unknown;
+  visaExtensionConfig?: {
+    ratio: number;
+    maxSlots: number;
+    visaReward: number;
+    question: ArenaQuestion;
+  };
+  registrationStartedAt?: number;
+  registrationEndsAt?: number;
+  registeredPlayers?: Array<{ playerId: string; name: string; timestamp: number }>;
+  qualifiedPlayerIds?: string[];
+  extensionSubmissions?: Record<string, { optionIndex: number; isCorrect: boolean; timestamp: number }>;
 }
 
-function createEmptySuitStats(): PlayerState['suitStats'] {
+export const DEFAULT_VISA_EXTENSION_QUESTION: ArenaQuestion = {
+  id: 'ext-default-1',
+  subject: 'Thử Thách Sinh Tử',
+  suit: 'hearts',
+  cardRank: 'A',
+  difficulty: 9,
+  topic: 'Gia hạn Visa Sinh tồn',
+  prompt: 'Trong thuyết Trò chơi (Game Theory), khi hai kẻ bị thanh trừng cùng đứng trước cơ hội sống sót duy nhất, nghịch lý kinh điển nào mô tả tình thế mà việc mỗi bên tối ưu hóa quyền lợi ích kỷ lại dẫn đến sự hủy diệt chung cho cả hai?',
+  options: [
+    'Nghịch lý Fermi (Fermi Paradox)',
+    'Thế lưỡng nan của người tù (Prisoner\'s Dilemma)',
+    'Nghịch lý Con quạ (Hempel\'s Raven)',
+    'Nghịch lý Monty Hall',
+  ],
+  correctIndex: 1,
+  explanation: 'Prisoner\'s Dilemma (Thế lưỡng nan của người tù) là mô hình chứng minh khi hai bên không thể tin tưởng hợp tác và cùng chọn phản bội, kết cục đạt được là cân bằng Nash tồi tệ nhất.',
+  timeLimitMs: 25000,
+  source: 'bank',
+};
+
+// Built-in question bank for offline/fallback mode
+export const BUILTIN_QUESTION_BANK: ArenaQuestion[] = [
+  {
+    id: 'cs-spade-1',
+    subject: 'Computer Science & Algorithms',
+    suit: 'spades',
+    cardRank: '4',
+    difficulty: 4,
+    topic: 'Phân tích Độ phức tạp',
+    prompt: 'Trong thuật toán tìm kiếm nhị phân trên mảng đã sắp xếp kích thước N = 1,048,576, số phép so sánh tối đa trong trường hợp xấu nhất là bao nhiêu?',
+    options: ['10 phép so sánh', '20 phép so sánh', '21 phép so sánh', '1,024 phép so sánh'],
+    correctIndex: 2,
+    explanation: 'log2(1,048,576) = 20, cộng thêm 1 phép kiểm tra phần tử cuối cùng nên tối đa là floor(log2(N)) + 1 = 21 phép so sánh.',
+    timeLimitMs: 14000,
+    source: 'bank',
+  },
+  {
+    id: 'cs-diamond-1',
+    subject: 'Computer Science & Algorithms',
+    suit: 'diamonds',
+    cardRank: '7',
+    difficulty: 7,
+    topic: 'Hệ điều hành & Đồng thời',
+    prompt: 'Điều kiện nào sau đây KHÔNG PHẢI là một trong 4 điều kiện Coffman gây ra hiện tượng bế tắc (Deadlock)?',
+    options: [
+      'Loại trừ tương hỗ (Mutual Exclusion)',
+      'Giữ và chờ (Hold and Wait)',
+      'Thu hồi tài nguyên sớm (Preemption allowed)',
+      'Chờ đợi vòng tròn (Circular Wait)',
+    ],
+    correctIndex: 2,
+    explanation: '4 điều kiện Coffman gồm: Mutual Exclusion, Hold and Wait, No Preemption (Không thu hồi), và Circular Wait. Cho phép thu hồi tài nguyên (Preemption) là giải pháp phá vỡ bế tắc.',
+    timeLimitMs: 22000,
+    source: 'bank',
+  },
+  {
+    id: 'cs-heart-1',
+    subject: 'Computer Science & Algorithms',
+    suit: 'hearts',
+    cardRank: '8',
+    difficulty: 8,
+    topic: 'Cấu trúc Dữ liệu & Đồ thị',
+    prompt: 'Độ phức tạp thời gian tối ưu nhất để tìm cây khung nhỏ nhất (MST) trên đồ thị liên thông vô hướng có V đỉnh và E cạnh sử dụng cấu trúc Disjoint Set Union (DSU) với nén đường và xếp hạng là gì?',
+    options: ['O(E log V)', 'O(E α(V)) sau khi đã sắp xếp cạnh', 'O(V^2)', 'O(E + V log V)'],
+    correctIndex: 1,
+    explanation: 'Sau khi sắp xếp các cạnh O(E log E), mỗi thao tác Find/Union trên DSU có thời gian khấu hao O(α(V)) (hàm ngược Ackermann cực nhỏ).',
+    dealerHint: 'Quản trò cảnh báo: Đừng vội đánh giá thấp độ tăng trưởng siêu chậm của hàm nghịch đảo Ackermann.',
+    timeLimitMs: 22000,
+    source: 'bank',
+  },
+  {
+    id: 'cs-club-1',
+    subject: 'Computer Science & Algorithms',
+    suit: 'clubs',
+    cardRank: '9',
+    difficulty: 9,
+    topic: 'Lý thuyết Tính toán & NP-Complete',
+    prompt: 'Nếu một bài toán X thuộc lớp NP và tồn tại một thuật toán chuyển đổi đa thức từ bài toán 3-SAT sang X, ta có thể kết luận điều gì về X?',
+    options: [
+      'X giải được trong thời gian đa thức P',
+      'X chắc chắn là bài toán NP-Complete',
+      'X là bài toán NP-Hard',
+      'Không thể kết luận được tính đầy đủ của X',
+    ],
+    correctIndex: 1,
+    explanation: 'Vì 3-SAT là NP-Complete, việc quy dẫn đa thức 3-SAT <=p X chứng minh X là NP-Hard. Kết hợp với giả thiết X in NP, suy ra X là NP-Complete.',
+    timeLimitMs: 26000,
+    source: 'bank',
+  },
+  {
+    id: 'gt-heart-1',
+    subject: 'Game Theory & Strategic Logic',
+    suit: 'hearts',
+    cardRank: '9',
+    difficulty: 9,
+    topic: 'Cân bằng Nash & Điểm Yên ngựa',
+    prompt: 'Trong trò chơi tổng bằng không (Zero-sum Game) với ma trận thanh toán 2x2 không có điểm yên ngựa thuần túy, định lý Minimax của John von Neumann khẳng định điều gì?',
+    options: [
+      'Không tồn tại bất kỳ điểm cân bằng nào',
+      'Luôn tồn tại ít nhất một cân bằng Nash trong không gian chiến lược hỗn hợp',
+      'Người đi trước luôn có lợi thế tuyệt đối',
+      'Tổng điểm của hai người chơi luôn lớn hơn 0',
+    ],
+    correctIndex: 1,
+    explanation: 'Định lý Minimax của Von Neumann chứng minh mọi trò chơi 2 người tổng bằng không hữu hạn luôn có nghiệm cân bằng trong không gian chiến lược hỗn hợp.',
+    timeLimitMs: 25000,
+    source: 'bank',
+  },
+  {
+    id: 'stem-spade-1',
+    subject: 'STEM & Quantitative Physics',
+    suit: 'spades',
+    cardRank: '4',
+    difficulty: 4,
+    topic: 'Động học',
+    prompt: 'Một tia laser di chuyển trong chân không với vận tốc xấp xỉ 3×10^8 m/s. Thời gian để tia laser truyền đi quãng đường 300 km là bao nhiêu?',
+    options: ['0.1 mili-giây', '1 mili-giây', '10 mili-giây', '0.01 giây'],
+    correctIndex: 1,
+    explanation: 't = s / c = (300 × 10^3 m) / (3 × 10^8 m/s) = 10^-3 s = 1 mili-giây.',
+    timeLimitMs: 14000,
+    source: 'bank',
+  },
+];
+
+export function getQuestionsForSubject(subject: string): ArenaQuestion[] {
+  const filtered = BUILTIN_QUESTION_BANK.filter((q) => q.subject.toLowerCase() === subject.toLowerCase());
+  if (filtered.length >= 4) return filtered;
+  return BUILTIN_QUESTION_BANK.slice(0, 6);
+}
+
+export function createEmptySuitStats(): PlayerState['suitStats'] {
   return {
     spades: { attempts: 0, correct: 0, totalResponseMs: 0 },
     hearts: { attempts: 0, correct: 0, totalResponseMs: 0 },
@@ -59,17 +194,9 @@ function createEmptySuitStats(): PlayerState['suitStats'] {
   };
 }
 
-const SUIT_LABEL_VI: Record<CardSuit, string> = {
-  spades: 'Bích',
-  hearts: 'Cơ',
-  clubs: 'Chuồn',
-  diamonds: 'Rô',
-};
-
-function createPlayer(id: string, name: string, uid?: string): PlayerState {
-  return {
+export function createPlayer(id: string, name: string, uid?: string): PlayerState {
+  const player: PlayerState = {
     id,
-    uid,
     name: name.trim().slice(0, 32) || 'Người chơi',
     visa: 3,
     maxVisa: 5,
@@ -82,10 +209,16 @@ function createPlayer(id: string, name: string, uid?: string): PlayerState {
     suitStats: createEmptySuitStats(),
     topicStats: {},
     answerLog: [],
+    currentQuestionIndex: 0,
+    completedQuestions: false,
   };
+  if (uid && uid.trim()) {
+    player.uid = uid.trim();
+  }
+  return player;
 }
 
-function generateRoomCode(): string {
+export function generateRoomCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let out = 'BL-';
   for (let i = 0; i < 4; i++) {
@@ -94,7 +227,7 @@ function generateRoomCode(): string {
   return out;
 }
 
-function toClientQuestion(
+export function toClientQuestion(
   q: ArenaQuestion | null,
   roundNumber: number,
   totalRounds: number,
@@ -102,7 +235,7 @@ function toClientQuestion(
   isRevival: boolean
 ): ClientQuestion | null {
   if (!q) return null;
-  return {
+  const clientQ: ClientQuestion = {
     id: q.id,
     roundNumber,
     totalRounds,
@@ -115,15 +248,15 @@ function toClientQuestion(
     timeLimitMs: q.timeLimitMs,
     startedAt,
     isRevival,
-    dealerHint: q.dealerHint,
     wagerAllowed: q.suit === 'hearts' && !isRevival,
     source: q.source,
   };
+  if (q.dealerHint) {
+    clientQ.dealerHint = q.dealerHint;
+  }
+  return clientQ;
 }
 
-/**
- * Create a new Arena room in Firestore
- */
 export async function createFirestoreArena(params: {
   playerId: string;
   playerName: string;
@@ -134,10 +267,10 @@ export async function createFirestoreArena(params: {
   const roomCode = generateRoomCode();
   const deck = params.customDeck && params.customDeck.length > 0
     ? [...params.customDeck]
-    : [...getQuestionsForSubject(params.subject)];
+    : getQuestionsForSubject(params.subject);
 
   const hostPlayer = createPlayer(params.playerId, params.playerName, params.uid);
-  const welcomeMsg = 'Chào mừng các Kẻ tham gia tới Borderland Arena. Visa khởi điểm: 3 ngày. Khi Visa chạm 0, tia laser sẽ khai hỏa.';
+  const welcomeMsg = 'Chào mừng tới Borderland Arena. Visa khởi điểm: 3 ngày. Khi Visa chạm 0, tia laser quỹ đạo sẽ kích hoạt.';
 
   const initialDoc: FirestoreArenaDoc = {
     roomCode,
@@ -172,13 +305,10 @@ export async function createFirestoreArena(params: {
     updatedAt: serverTimestamp(),
   };
 
-  await setDoc(doc(db, 'arenas', roomCode), initialDoc);
+  await setDoc(doc(db, 'arenas', roomCode), sanitizeForFirestore(initialDoc));
   return roomCode;
 }
 
-/**
- * Join an existing Firestore arena
- */
 export async function joinFirestoreArena(params: {
   roomCode: string;
   playerId: string;
@@ -194,12 +324,14 @@ export async function joinFirestoreArena(params: {
   }
 
   const data = snap.data() as FirestoreArenaDoc;
-  const players = [...data.players];
+  const players = [...(data.players || [])];
   const existingIdx = players.findIndex((p) => p.id === params.playerId);
 
   if (existingIdx >= 0) {
     players[existingIdx].name = params.playerName.trim().slice(0, 32) || players[existingIdx].name;
-    if (params.uid) players[existingIdx].uid = params.uid;
+    if (params.uid && params.uid.trim()) {
+      players[existingIdx].uid = params.uid.trim();
+    }
   } else {
     players.push(createPlayer(params.playerId, params.playerName, params.uid));
   }
@@ -212,19 +344,16 @@ export async function joinFirestoreArena(params: {
     action: 'briefing',
   };
 
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     players,
     dealerLogs: [joinLog, ...(data.dealerLogs || [])].slice(0, 24),
     serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
+  }));
 
   return true;
 }
 
-/**
- * Subscribe to real-time room updates via Firestore onSnapshot
- */
 export function subscribeFirestoreArena(
   roomCode: string,
   onUpdate: (snapshot: ArenaRoomSnapshot, laserStrike?: boolean) => void,
@@ -237,10 +366,9 @@ export function subscribeFirestoreArena(
     ref,
     (snap) => {
       if (!snap.exists()) {
-        onError?.(new Error(`Phòng ${normalized} đã bị đóng hoặc không tồn tại.`));
+        onError?.(new Error(`Phòng đấu ${normalized} đã giải tán hoặc không tồn tại.`));
         return;
       }
-
       const data = snap.data() as FirestoreArenaDoc;
       const snapshot: ArenaRoomSnapshot = {
         roomCode: data.roomCode,
@@ -251,27 +379,32 @@ export function subscribeFirestoreArena(
         difficultyLevel: data.difficultyLevel,
         isRevivalActive: data.isRevivalActive,
         revivalOffered: data.revivalOffered,
-        currentQuestion: data.activeQuestion,
+        activeQuestion: data.activeQuestion,
+        questionStartedAt: data.questionStartedAt,
+        submissions: data.submissions || {},
         lastReveal: data.lastReveal,
         dealerMessage: data.dealerMessage,
         dealerLogs: data.dealerLogs || [],
         players: data.players || [],
         hostPlayerId: data.hostPlayerId,
+        isPublic: data.isPublic,
         serverTime: Date.now(),
+        laserStrike: Boolean(data.laserStrike),
+        visaExtensionConfig: data.visaExtensionConfig,
+        registrationStartedAt: data.registrationStartedAt,
+        registrationEndsAt: data.registrationEndsAt,
+        registeredPlayers: data.registeredPlayers || [],
+        qualifiedPlayerIds: data.qualifiedPlayerIds || [],
+        extensionSubmissions: data.extensionSubmissions || {},
       };
-
       onUpdate(snapshot, Boolean(data.laserStrike));
     },
     (err) => {
-      console.error('Firestore Arena subscription error:', err);
       onError?.(err);
     }
   );
 }
 
-/**
- * Start the Game (Host authoritative)
- */
 export async function startFirestoreArena(roomCode: string): Promise<void> {
   const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
   const snap = await getDoc(ref);
@@ -282,95 +415,57 @@ export async function startFirestoreArena(roomCode: string): Promise<void> {
     ? data.fullDeck
     : getQuestionsForSubject(data.subject);
 
-  const resetPlayers = (data.players || []).map((p) => ({
-    ...p,
-    visa: 3,
-    score: 0,
-    streak: 0,
-    status: 'active' as const,
-    tabSwitches: 0,
-    hasAnsweredCurrent: false,
-    revivalUsed: false,
-    lastCorrect: undefined,
-    lastResponseMs: undefined,
-    lastVisaDelta: undefined,
-    lastScoreDelta: undefined,
-    suitStats: createEmptySuitStats(),
-    topicStats: {},
-    answerLog: [],
-  }));
+  const resetPlayers = (data.players || []).map((p) => {
+    const cleaned: PlayerState = {
+      ...p,
+      visa: 3,
+      score: 0,
+      streak: 0,
+      status: 'active',
+      hasAnsweredCurrent: false,
+      revivalUsed: false,
+      tabSwitches: 0,
+      currentQuestionIndex: 0,
+      completedQuestions: false,
+      suitStats: createEmptySuitStats(),
+      topicStats: {},
+      answerLog: [],
+    };
+    return cleaned;
+  });
 
-  const firstQuestion = deck[0];
-  const suitBrief: Record<CardSuit, string> = {
-    spades: `Lá bài ${firstQuestion.cardRank} Bích — Thử thách tốc độ. Chậm trễ đồng nghĩa với mất Visa.`,
-    hearts: `Lá bài ${firstQuestion.cardRank} Cơ — Thao túng tâm lý. Ngươi có thể cược thêm Visa để nhân đôi điểm số.`,
-    clubs: `Lá bài ${firstQuestion.cardRank} Chuồn — Trò chơi đồng thuận. Đa số trả lời đúng sẽ được thưởng Visa.`,
-    diamonds: `Lá bài ${firstQuestion.cardRank} Rô — Logic thuần túy. Độ chính xác tuyệt đối là lối thoát duy nhất.`,
-  };
-
-  const cutsceneClientQ = toClientQuestion(firstQuestion, 1, deck.length, 0, false);
+  const firstQ = deck[0] || null;
+  const clientQ = toClientQuestion(firstQ, 1, deck.length, Date.now(), false);
   const startLog: DealerLogEntry = {
     id: `log-${Date.now()}`,
     timestamp: Date.now(),
-    phase: 'Cutscene',
-    message: suitBrief[firstQuestion.suit],
-    action: 'briefing',
+    phase: 'Question',
+    message: 'Trận chiến sinh tồn bắt đầu! Hãy chốt đáp án để vượt qua từng thử thách.',
+    action: 'escalation',
   };
 
-  // Phase 1: Cutscene
-  await updateDoc(ref, {
-    fsmState: 'Cutscene',
+  await updateDoc(ref, sanitizeForFirestore({
+    fsmState: 'Question',
     currentRound: 1,
     totalRounds: deck.length,
-    difficultyLevel: 5,
-    isRevivalActive: false,
-    revivalOffered: false,
-    fullDeck: deck,
-    activeQuestion: cutsceneClientQ,
-    questionStartedAt: 0,
+    activeQuestion: clientQ,
+    questionStartedAt: Date.now(),
     submissions: {},
     lastReveal: null,
-    dealerMessage: suitBrief[firstQuestion.suit],
-    dealerLogs: [startLog, ...(data.dealerLogs || [])].slice(0, 24),
-    players: resetPlayers,
     laserStrike: false,
+    players: resetPlayers,
+    dealerMessage: startLog.message,
+    dealerLogs: [startLog, ...(data.dealerLogs || [])].slice(0, 24),
     serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
-
-  // Phase 2: Enter Question phase after 2.6s
-  setTimeout(async () => {
-    try {
-      const qSnap = await getDoc(ref);
-      if (!qSnap.exists()) return;
-      const qData = qSnap.data() as FirestoreArenaDoc;
-      if (qData.fsmState !== 'Cutscene') return;
-
-      const startedAt = Date.now();
-      const liveClientQ = toClientQuestion(firstQuestion, 1, deck.length, startedAt, false);
-
-      await updateDoc(ref, {
-        fsmState: 'Question',
-        activeQuestion: liveClientQ,
-        questionStartedAt: startedAt,
-        submissions: {},
-        laserStrike: false,
-        serverTime: startedAt,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (e) {
-      console.error('Error transitioning to Question phase:', e);
-    }
-  }, 2600);
+  }));
 }
 
-/**
- * Submit player answer in Firestore
- */
-export async function submitFirestoreAnswer(params: {
+export async function submitAnswerFirestoreArena(params: {
   roomCode: string;
   playerId: string;
   optionIndex: number;
+  responseMs: number;
   wagered: boolean;
 }): Promise<void> {
   const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
@@ -378,342 +473,394 @@ export async function submitFirestoreAnswer(params: {
   if (!snap.exists()) return;
 
   const data = snap.data() as FirestoreArenaDoc;
-  if (data.fsmState !== 'Question' || !data.activeQuestion) return;
-
-  const player = (data.players || []).find((p) => p.id === params.playerId);
-  if (!player) return;
-
-  const eligible = data.isRevivalActive
-    ? player.status === 'eliminated' && !player.revivalUsed
-    : player.status === 'active' || player.status === 'revived';
-
-  if (!eligible || (data.submissions && data.submissions[params.playerId])) return;
-
-  const responseMs = Math.max(150, Math.min(data.activeQuestion.timeLimitMs, Date.now() - (data.questionStartedAt || Date.now())));
-  const canWager = data.activeQuestion.suit === 'hearts' && !data.isRevivalActive && player.visa >= 2;
-
-  const newSubmissions = {
+  const submissions = {
     ...(data.submissions || {}),
     [params.playerId]: {
       optionIndex: params.optionIndex,
-      responseMs,
-      wagered: Boolean(params.wagered && canWager),
+      responseMs: params.responseMs,
+      wagered: params.wagered,
     },
   };
 
-  const updatedPlayers = (data.players || []).map((p) =>
-    p.id === params.playerId ? { ...p, hasAnsweredCurrent: true } : p
-  );
-
-  await updateDoc(ref, {
-    submissions: newSubmissions,
-    players: updatedPlayers,
-    updatedAt: serverTimestamp(),
-  });
-
-  // Check if all eligible players have submitted
-  const eligiblePlayers = updatedPlayers.filter((p) =>
-    data.isRevivalActive
-      ? p.status === 'eliminated' && !p.revivalUsed
-      : p.status === 'active' || p.status === 'revived'
-  );
-
-  if (eligiblePlayers.every((p) => newSubmissions[p.id])) {
-    await resolveFirestoreRound(params.roomCode);
+  const players = [...(data.players || [])];
+  const pIdx = players.findIndex((p) => p.id === params.playerId);
+  if (pIdx >= 0) {
+    players[pIdx].hasAnsweredCurrent = true;
   }
+
+  await updateDoc(ref, sanitizeForFirestore({
+    submissions,
+    players,
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
 }
 
-/**
- * Resolve round: grade answers, compute Visas, laser eliminations, and reveal
- */
-export async function resolveFirestoreRound(roomCode: string): Promise<void> {
+export async function submitIndividualAnswer(params: {
+  roomCode: string;
+  playerId: string;
+  optionIndex: number;
+  responseMs: number;
+}): Promise<{ isCorrect: boolean; explanation: string; newVisa: number; newScore: number; isLaser: boolean } | null> {
+  const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const players = [...(data.players || [])];
+  const playerIdx = players.findIndex((p) => p.id === params.playerId);
+  if (playerIdx < 0) return null;
+
+  const player = players[playerIdx];
+  const currentIdx = player.currentQuestionIndex || 0;
+  const deck = data.fullDeck && data.fullDeck.length > 0
+    ? data.fullDeck
+    : getQuestionsForSubject(data.subject);
+
+  const q = deck[currentIdx] || deck[0];
+  if (!q) return null;
+
+  const isCorrect = params.optionIndex === q.correctIndex;
+  let newVisa = player.visa;
+  let newScore = player.score;
+  let newStreak = player.streak;
+  let newStatus = player.status;
+  let isLaser = false;
+
+  if (isCorrect) {
+    newScore += 100 + Math.max(0, 50 - Math.floor(params.responseMs / 500));
+    newStreak += 1;
+    newVisa = Math.min(player.maxVisa || 5, newVisa + 1);
+  } else {
+    newStreak = 0;
+    newVisa = Math.max(0, newVisa - 1);
+    if (newVisa === 0) {
+      newStatus = 'eliminated';
+      isLaser = true;
+    }
+  }
+
+  const suitStats = { ...player.suitStats };
+  const currentSuitStat = suitStats[q.suit] || { attempts: 0, correct: 0, totalResponseMs: 0 };
+  suitStats[q.suit] = {
+    attempts: currentSuitStat.attempts + 1,
+    correct: currentSuitStat.correct + (isCorrect ? 1 : 0),
+    totalResponseMs: currentSuitStat.totalResponseMs + params.responseMs,
+  };
+
+  const answerLog = [
+    ...(player.answerLog || []),
+    {
+      round: currentIdx + 1,
+      suit: q.suit,
+      correct: isCorrect,
+      responseMs: params.responseMs,
+      timestamp: Date.now(),
+    },
+  ];
+
+  players[playerIdx] = {
+    ...player,
+    visa: newVisa,
+    score: newScore,
+    streak: newStreak,
+    status: newStatus,
+    hasAnsweredCurrent: true,
+    suitStats,
+    answerLog,
+  };
+
+  const logs = [...(data.dealerLogs || [])];
+  if (isLaser) {
+    logs.unshift({
+      id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+      phase: 'Elimination',
+      message: `Tia laser quỹ đạo giáng xuống! Kẻ tham gia ${player.name} đã bị thanh trừng do cạn kiệt Visa.`,
+      action: 'elimination',
+    });
+  }
+
+  await updateDoc(ref, sanitizeForFirestore({
+    players,
+    dealerLogs: logs.slice(0, 24),
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
+
+  return {
+    isCorrect,
+    explanation: q.explanation || (isCorrect ? 'Đáp án hoàn toàn chính xác.' : 'Đáp án không chính xác.'),
+    newVisa,
+    newScore,
+    isLaser,
+  };
+}
+
+export async function advancePlayerQuestion(params: {
+  roomCode: string;
+  playerId: string;
+}): Promise<{ completed: boolean; nextIndex: number }> {
+  const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return { completed: true, nextIndex: 0 };
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const players = [...(data.players || [])];
+  const playerIdx = players.findIndex((p) => p.id === params.playerId);
+  if (playerIdx < 0) return { completed: true, nextIndex: 0 };
+
+  const total = data.totalRounds || (data.fullDeck ? data.fullDeck.length : 10);
+  const nextIdx = (players[playerIdx].currentQuestionIndex || 0) + 1;
+  const completed = nextIdx >= total;
+
+  players[playerIdx] = {
+    ...players[playerIdx],
+    currentQuestionIndex: nextIdx,
+    hasAnsweredCurrent: false,
+    completedQuestions: completed,
+  };
+
+  await updateDoc(ref, sanitizeForFirestore({
+    players,
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
+
+  return { completed, nextIndex: nextIdx };
+}
+
+export async function activateVisaExtension(params: {
+  roomCode: string;
+  ratio: number;
+  visaReward?: number;
+  question?: ArenaQuestion;
+}): Promise<void> {
+  const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const deadPlayers = (data.players || []).filter((p) => p.status === 'eliminated' || p.visa <= 0);
+  const maxSlots = Math.max(1, Math.ceil(deadPlayers.length * (params.ratio / 100)));
+  const now = Date.now();
+  const endsAt = now + 10000;
+
+  const extQuestion = params.question || DEFAULT_VISA_EXTENSION_QUESTION;
+  const log: DealerLogEntry = {
+    id: `log-${now}`,
+    timestamp: now,
+    phase: 'visa_extension_registration',
+    message: `QUẢN TRÒ TẠM DỪNG ĐẤU TRƯỜNG! Mở cổng đăng ký gia hạn Visa (10 giây) cho ${deadPlayers.length} kẻ đã bị loại. Giới hạn: ${maxSlots} suất (${params.ratio}%).`,
+    action: 'escalation',
+  };
+
+  await updateDoc(ref, sanitizeForFirestore({
+    fsmState: 'visa_extension_registration',
+    registrationStartedAt: now,
+    registrationEndsAt: endsAt,
+    registeredPlayers: [],
+    qualifiedPlayerIds: [],
+    extensionSubmissions: {},
+    visaExtensionConfig: {
+      ratio: params.ratio,
+      maxSlots,
+      visaReward: params.visaReward || 1,
+      question: extQuestion,
+    },
+    dealerMessage: log.message,
+    dealerLogs: [log, ...(data.dealerLogs || [])].slice(0, 24),
+    serverTime: now,
+    updatedAt: serverTimestamp(),
+  }));
+}
+
+export async function registerForVisaExtension(params: {
+  roomCode: string;
+  playerId: string;
+  playerName: string;
+}): Promise<{ success: boolean; position: number }> {
+  const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return { success: false, position: -1 };
+
+  const data = snap.data() as FirestoreArenaDoc;
+  if (data.fsmState !== 'visa_extension_registration') {
+    return { success: false, position: -1 };
+  }
+
+  const list = [...(data.registeredPlayers || [])];
+  const existingIdx = list.findIndex((x) => x.playerId === params.playerId);
+  if (existingIdx >= 0) {
+    return { success: true, position: existingIdx + 1 };
+  }
+
+  const now = Date.now();
+  list.push({ playerId: params.playerId, name: params.playerName, timestamp: now });
+
+  await updateDoc(ref, sanitizeForFirestore({
+    registeredPlayers: list,
+    serverTime: now,
+    updatedAt: serverTimestamp(),
+  }));
+
+  return { success: true, position: list.length };
+}
+
+export async function startVisaExtensionQuiz(roomCode: string): Promise<void> {
   const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
   const snap = await getDoc(ref);
   if (!snap.exists()) return;
 
   const data = snap.data() as FirestoreArenaDoc;
-  if (data.fsmState !== 'Question') return;
+  const config = data.visaExtensionConfig;
+  const maxSlots = config?.maxSlots || 1;
+  const registered = data.registeredPlayers || [];
+  const qualified = registered.slice(0, maxSlots).map((r) => r.playerId);
 
-  const currentQIndex = data.currentRound - 1;
-  const q = data.fullDeck[currentQIndex];
-  if (!q) return;
-
-  const submissions = data.submissions || {};
-  const optionCounts: [number, number, number, number] = [0, 0, 0, 0];
-
-  const eligiblePlayers = (data.players || []).filter((p) =>
-    data.isRevivalActive
-      ? p.status === 'eliminated' && !p.revivalUsed
-      : p.status === 'active' || p.status === 'revived'
-  );
-
-  let correctCount = 0;
-  let totalResponseMs = 0;
-
-  for (const p of eligiblePlayers) {
-    const sub = submissions[p.id];
-    if (sub) {
-      optionCounts[sub.optionIndex] = (optionCounts[sub.optionIndex] || 0) + 1;
-      totalResponseMs += sub.responseMs;
-      if (sub.optionIndex === q.correctIndex) {
-        correctCount += 1;
-      }
-    } else {
-      totalResponseMs += q.timeLimitMs;
-    }
-  }
-
-  const totalEligible = Math.max(1, eligiblePlayers.length);
-  const accuracyPct = (correctCount / totalEligible) * 100;
-  const avgResponseMs = totalResponseMs / totalEligible;
-  const consensusAchieved = q.suit === 'clubs' && accuracyPct >= 60;
-
-  let newlyEliminated = 0;
-
-  const updatedPlayers = (data.players || []).map((player) => {
-    const isEligible = data.isRevivalActive
-      ? player.status === 'eliminated' && !player.revivalUsed
-      : player.status === 'active' || player.status === 'revived';
-
-    if (!isEligible) return player;
-
-    const sub = submissions[player.id];
-    const isCorrect = sub ? sub.optionIndex === q.correctIndex : false;
-    const responseMs = sub ? sub.responseMs : q.timeLimitMs;
-    const wagered = sub ? sub.wagered : false;
-
-    // Analytics
-    const suitStats = { ...player.suitStats };
-    const suitBucket = { ...(suitStats[q.suit] || { attempts: 0, correct: 0, totalResponseMs: 0 }) };
-    suitBucket.attempts += 1;
-    suitBucket.totalResponseMs += responseMs;
-    if (isCorrect) suitBucket.correct += 1;
-    suitStats[q.suit] = suitBucket;
-
-    let visaDelta = 0;
-    let scoreDelta = 0;
-    let newVisa = player.visa;
-    let newStatus = player.status;
-    let newStreak = player.streak;
-    let newScore = player.score;
-
-    if (data.isRevivalActive) {
-      if (isCorrect) {
-        newStatus = 'revived';
-        newVisa = 2;
-        visaDelta = 2;
-        scoreDelta = 350;
-        newScore += scoreDelta;
-        newStreak = 1;
-      } else {
-        newStatus = 'eliminated';
-        newVisa = 0;
-        visaDelta = 0;
-        newlyEliminated += 1;
-      }
-    } else if (isCorrect) {
-      newStreak += 1;
-      const speedRatio = Math.max(0, 1 - responseMs / q.timeLimitMs);
-      const suitMultiplier = q.suit === 'diamonds' ? 1.35 : q.suit === 'spades' ? 1.25 : 1.1;
-      const baseScore = Math.round((200 + speedRatio * 180) * suitMultiplier);
-      scoreDelta = wagered ? baseScore * 2 : baseScore;
-      newScore += scoreDelta;
-
-      if ((wagered || consensusAchieved) && newVisa < player.maxVisa) {
-        visaDelta = 1;
-        newVisa = Math.min(player.maxVisa, newVisa + 1);
-      }
-    } else {
-      newStreak = 0;
-      visaDelta = wagered ? -2 : -1;
-      newVisa = Math.max(0, newVisa + visaDelta);
-      if (newVisa === 0) {
-        newStatus = 'eliminated';
-        newlyEliminated += 1;
-      }
-    }
-
-    const answerLog = [
-      ...(player.answerLog || []),
-      {
-        roundNumber: data.currentRound,
-        questionId: q.id,
-        suit: q.suit,
-        cardRank: q.cardRank,
-        difficulty: q.difficulty,
-        topic: q.topic,
-        selectedIndex: sub ? sub.optionIndex : null,
-        correctIndex: q.correctIndex,
-        isCorrect,
-        responseMs,
-        visaDelta,
-        scoreDelta,
-        wagered,
-      },
-    ];
-
-    return {
-      ...player,
-      visa: newVisa,
-      status: newStatus,
-      score: newScore,
-      streak: newStreak,
-      revivalUsed: data.isRevivalActive ? true : player.revivalUsed,
-      lastCorrect: isCorrect,
-      lastResponseMs: responseMs,
-      lastVisaDelta: visaDelta,
-      lastScoreDelta: scoreDelta,
-      suitStats,
-      answerLog,
-    };
-  });
-
-  let difficultyAction: 'escalate' | 'maintain' | 'revival' = 'maintain';
-  const dealerReaction =
-    accuracyPct >= 75
-      ? 'Quá dễ dàng sao? Đừng tự mãn. Quản trò đang tăng độ khó cho vòng kế tiếp.'
-      : newlyEliminated > 0
-        ? 'Visa chạm mốc 0. Tia laser quỹ đạo đã kích hoạt thanh trừng.'
-        : 'Máu và thời gian vẫn đang chảy. Hãy chuẩn bị cho lá bài tiếp theo.';
-
-  if (accuracyPct >= 75 && avgResponseMs < 11000) {
-    difficultyAction = 'escalate';
-  }
-
-  const reveal: RoundReveal = {
-    questionId: q.id,
-    correctIndex: q.correctIndex,
-    explanation: q.explanation,
-    optionCounts,
-    consensusAchieved,
-    accuracyPct,
-    avgResponseMs,
-    dealerReaction,
-    difficultyAction,
-  };
-
-  const nextState: FsmState = newlyEliminated > 0 ? 'Elimination' : 'Result';
-  const revealLog: DealerLogEntry = {
+  const log: DealerLogEntry = {
     id: `log-${Date.now()}`,
     timestamp: Date.now(),
-    phase: nextState,
-    message: dealerReaction,
-    action: newlyEliminated > 0 ? 'execution' : difficultyAction === 'escalate' ? 'escalate' : 'briefing',
+    phase: 'visa_extension_quiz',
+    message: `Thời gian đăng ký kết thúc. Có ${qualified.length} kẻ nhanh tay nhất lọt vào vòng trả lời câu hỏi sinh tử gia hạn Visa!`,
+    action: 'escalation',
   };
 
-  await updateDoc(ref, {
-    fsmState: nextState,
-    lastReveal: reveal,
-    players: updatedPlayers,
-    laserStrike: newlyEliminated > 0,
-    dealerMessage: dealerReaction,
-    dealerLogs: [revealLog, ...(data.dealerLogs || [])].slice(0, 24),
+  await updateDoc(ref, sanitizeForFirestore({
+    fsmState: 'visa_extension_quiz',
+    qualifiedPlayerIds: qualified,
+    dealerMessage: log.message,
+    dealerLogs: [log, ...(data.dealerLogs || [])].slice(0, 24),
     serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
+  }));
 }
 
-/**
- * Move to next round or finish match
- */
+export async function submitVisaExtensionAnswer(params: {
+  roomCode: string;
+  playerId: string;
+  optionIndex: number;
+}): Promise<{ isCorrect: boolean; visaReward: number }> {
+  const ref = doc(db, 'arenas', params.roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return { isCorrect: false, visaReward: 0 };
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const config = data.visaExtensionConfig;
+  const correctIdx = config?.question?.correctIndex ?? 1;
+  const visaReward = config?.visaReward || 1;
+  const isCorrect = params.optionIndex === correctIdx;
+
+  const players = [...(data.players || [])];
+  const pIdx = players.findIndex((p) => p.id === params.playerId);
+  const logs = [...(data.dealerLogs || [])];
+
+  if (pIdx >= 0) {
+    if (isCorrect) {
+      players[pIdx] = {
+        ...players[pIdx],
+        status: 'revived',
+        visa: Math.max(1, visaReward),
+      };
+      logs.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: Date.now(),
+        phase: 'visa_extension_quiz',
+        message: `Kẻ tham gia ${players[pIdx].name} đã trả lời CHÍNH XÁC câu hỏi sinh tồn! Visa được gia hạn thêm ${visaReward} ngày. Được phép hồi sinh!`,
+        action: 'revival',
+      });
+    } else {
+      logs.unshift({
+        id: `log-${Date.now()}`,
+        timestamp: Date.now(),
+        phase: 'visa_extension_quiz',
+        message: `Kẻ tham gia ${players[pIdx].name} đã trả lời SAI câu hỏi gia hạn Visa. Cơ hội sống sót cuối cùng đã tan biến.`,
+        action: 'elimination',
+      });
+    }
+  }
+
+  const submissions = {
+    ...(data.extensionSubmissions || {}),
+    [params.playerId]: {
+      optionIndex: params.optionIndex,
+      isCorrect,
+      timestamp: Date.now(),
+    },
+  };
+
+  await updateDoc(ref, sanitizeForFirestore({
+    players,
+    extensionSubmissions: submissions,
+    dealerLogs: logs.slice(0, 24),
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
+
+  return { isCorrect, visaReward };
+}
+
+export async function resumeGameAfterExtension(roomCode: string): Promise<void> {
+  const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const log: DealerLogEntry = {
+    id: `log-${Date.now()}`,
+    timestamp: Date.now(),
+    phase: 'Question',
+    message: 'Host đã bấm TIẾP TỤC TRẬN ĐẤU! Toàn bộ người chơi còn sống tiếp tục thử thách từ vị trí của mình.',
+    action: 'briefing',
+  };
+
+  await updateDoc(ref, sanitizeForFirestore({
+    fsmState: 'Question',
+    dealerMessage: log.message,
+    dealerLogs: [log, ...(data.dealerLogs || [])].slice(0, 24),
+    serverTime: Date.now(),
+    updatedAt: serverTimestamp(),
+  }));
+}
+
 export async function nextPhaseFirestoreArena(roomCode: string): Promise<void> {
   const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
   const snap = await getDoc(ref);
   if (!snap.exists()) return;
 
   const data = snap.data() as FirestoreArenaDoc;
-  const activePlayers = (data.players || []).filter(
-    (p) => p.status === 'active' || p.status === 'revived'
-  );
+  const deck = data.fullDeck && data.fullDeck.length > 0
+    ? data.fullDeck
+    : getQuestionsForSubject(data.subject);
 
-  if (activePlayers.length === 0 || data.currentRound >= data.totalRounds) {
-    const endLog: DealerLogEntry = {
-      id: `log-${Date.now()}`,
-      timestamp: Date.now(),
-      phase: 'Leaderboard',
-      message: 'Trò chơi kết thúc. Bảng thành tích sinh tồn chính thức được niêm phong.',
-      action: 'briefing',
-    };
-
-    await updateDoc(ref, {
-      fsmState: 'Leaderboard',
-      laserStrike: false,
-      dealerMessage: endLog.message,
-      dealerLogs: [endLog, ...(data.dealerLogs || [])].slice(0, 24),
-      serverTime: Date.now(),
-      updatedAt: serverTimestamp(),
-    });
+  const nextRound = (data.currentRound || 0) + 1;
+  if (nextRound > deck.length) {
+    await finishMatchFirestoreArena(roomCode);
     return;
   }
 
-  const nextQ = data.fullDeck[data.currentRound];
-  if (!nextQ) return;
+  const nextQ = deck[nextRound - 1];
+  const clientQ = toClientQuestion(nextQ, nextRound, deck.length, Date.now(), false);
 
-  const nextRoundNumber = data.currentRound + 1;
-  const suitBrief: Record<CardSuit, string> = {
-    spades: `Lá bài ${nextQ.cardRank} Bích — Thử thách tốc độ. Chậm trễ đồng nghĩa với mất Visa.`,
-    hearts: `Lá bài ${nextQ.cardRank} Cơ — Thao túng tâm lý. Ngươi có thể cược thêm Visa để nhân đôi điểm số.`,
-    clubs: `Lá bài ${nextQ.cardRank} Chuồn — Trò chơi đồng thuận. Đa số trả lời đúng sẽ được thưởng Visa.`,
-    diamonds: `Lá bài ${nextQ.cardRank} Rô — Logic thuần túy. Độ chính xác tuyệt đối là lối thoát duy nhất.`,
-  };
-
-  const cutsceneClientQ = toClientQuestion(nextQ, nextRoundNumber, data.totalRounds, 0, false);
-  const nextLog: DealerLogEntry = {
-    id: `log-${Date.now()}`,
-    timestamp: Date.now(),
-    phase: 'Cutscene',
-    message: suitBrief[nextQ.suit],
-    action: 'briefing',
-  };
-
-  const resetAnswerFlags = (data.players || []).map((p) => ({
+  const resetPlayers = (data.players || []).map((p) => ({
     ...p,
     hasAnsweredCurrent: false,
   }));
 
-  await updateDoc(ref, {
-    fsmState: 'Cutscene',
-    currentRound: nextRoundNumber,
-    activeQuestion: cutsceneClientQ,
-    questionStartedAt: 0,
+  await updateDoc(ref, sanitizeForFirestore({
+    fsmState: 'Question',
+    currentRound: nextRound,
+    activeQuestion: clientQ,
+    questionStartedAt: Date.now(),
     submissions: {},
     lastReveal: null,
     laserStrike: false,
-    dealerMessage: suitBrief[nextQ.suit],
-    dealerLogs: [nextLog, ...(data.dealerLogs || [])].slice(0, 24),
-    players: resetAnswerFlags,
+    players: resetPlayers,
     serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
-
-  setTimeout(async () => {
-    try {
-      const qSnap = await getDoc(ref);
-      if (!qSnap.exists()) return;
-      const qData = qSnap.data() as FirestoreArenaDoc;
-      if (qData.fsmState !== 'Cutscene') return;
-
-      const startedAt = Date.now();
-      const liveClientQ = toClientQuestion(nextQ, nextRoundNumber, data.totalRounds, startedAt, false);
-
-      await updateDoc(ref, {
-        fsmState: 'Question',
-        activeQuestion: liveClientQ,
-        questionStartedAt: startedAt,
-        submissions: {},
-        laserStrike: false,
-        serverTime: startedAt,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (e) {
-      console.error('Error transitioning to Question phase:', e);
-    }
-  }, 2600);
+  }));
 }
 
-/**
- * Launch revival game
- */
 export async function launchRevivalFirestoreArena(roomCode: string): Promise<void> {
   const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
   const snap = await getDoc(ref);
@@ -728,92 +875,125 @@ export async function launchRevivalFirestoreArena(roomCode: string): Promise<voi
     id: `log-${Date.now()}`,
     timestamp: Date.now(),
     phase: 'Question',
-    message: 'TRÒ CHƠI HỒI SINH ĐÃ KÍCH HOẠT. Những kẻ bị loại có đúng 1 cơ hội duy nhất để sống lại!',
+    message: 'THỬ THÁCH HỒI SINH KÍCH HOẠT: Kẻ nào bị loại có cơ hội duy nhất chuộc lại Visa.',
     action: 'revival',
   };
 
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     fsmState: 'Question',
     isRevivalActive: true,
     revivalOffered: true,
     activeQuestion: revivalClientQ,
     questionStartedAt: Date.now(),
     submissions: {},
-    lastReveal: null,
-    laserStrike: false,
     dealerMessage: revivalLog.message,
     dealerLogs: [revivalLog, ...(data.dealerLogs || [])].slice(0, 24),
     serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
+  }));
 }
 
-/**
- * Report tab violation in Firestore
- */
-export async function reportTabViolationFirestore(roomCode: string, playerId: string): Promise<void> {
-  const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
-  const snap = await getDoc(ref);
-  if (!snap.exists()) return;
-
-  const data = snap.data() as FirestoreArenaDoc;
-  const players = (data.players || []).map((p) =>
-    p.id === playerId ? { ...p, tabSwitches: p.tabSwitches + 1 } : p
-  );
-
-  await updateDoc(ref, {
-    players,
-    updatedAt: serverTimestamp(),
-  });
-}
-
-/**
- * Set custom question deck into room
- */
 export async function setCustomDeckFirestoreArena(roomCode: string, deck: ArenaQuestion[]): Promise<void> {
   const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
-  await updateDoc(ref, {
+  await updateDoc(ref, sanitizeForFirestore({
     fullDeck: deck,
     totalRounds: deck.length,
+    serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
+  }));
 }
 
-/**
- * Inject AI generated or custom question into the live arena
- */
 export async function injectQuestionFirestoreArena(
   roomCode: string,
   question: ArenaQuestion,
-  immediate?: boolean
+  immediate: boolean
 ): Promise<void> {
   const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
   const snap = await getDoc(ref);
   if (!snap.exists()) return;
 
   const data = snap.data() as FirestoreArenaDoc;
-  const currentRound = data.currentRound;
-  const currentDeck = [...(data.fullDeck || [])];
+  const updatedDeck = [...(data.fullDeck || []), question];
 
   if (immediate) {
-    currentDeck.splice(currentRound, 0, question);
-  } else {
-    currentDeck.push(question);
-  }
+    const round = (data.currentRound || 0) + 1;
+    const clientQ = toClientQuestion(question, round, updatedDeck.length, Date.now(), false);
+    const log: DealerLogEntry = {
+      id: `log-${Date.now()}`,
+      timestamp: Date.now(),
+      phase: 'Question',
+      message: `Quản trò kích hoạt lá bài đặc biệt từ AI: ${question.prompt.slice(0, 60)}...`,
+      action: 'escalation',
+    };
 
-  const log: DealerLogEntry = {
+    await updateDoc(ref, sanitizeForFirestore({
+      fullDeck: updatedDeck,
+      totalRounds: updatedDeck.length,
+      currentRound: round,
+      activeQuestion: clientQ,
+      questionStartedAt: Date.now(),
+      submissions: {},
+      dealerMessage: log.message,
+      dealerLogs: [log, ...(data.dealerLogs || [])].slice(0, 24),
+      serverTime: Date.now(),
+      updatedAt: serverTimestamp(),
+    }));
+  } else {
+    await updateDoc(ref, sanitizeForFirestore({
+      fullDeck: updatedDeck,
+      totalRounds: updatedDeck.length,
+      serverTime: Date.now(),
+      updatedAt: serverTimestamp(),
+    }));
+  }
+}
+
+export async function finishMatchFirestoreArena(roomCode: string): Promise<void> {
+  const ref = doc(db, 'arenas', roomCode.trim().toUpperCase());
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+
+  const data = snap.data() as FirestoreArenaDoc;
+  const endLog: DealerLogEntry = {
     id: `log-${Date.now()}`,
     timestamp: Date.now(),
-    phase: data.fsmState,
-    message: `Quản trò AI đã rèn và nạp lá bài mới [${question.cardRank} ${question.suit}] vào vòng đấu.`,
+    phase: 'Leaderboard',
+    message: 'Quản trò đã bấm kết thúc trận đấu. Bảng thành tích sinh tồn chính thức được niêm phong.',
     action: 'briefing',
   };
 
-  await updateDoc(ref, {
-    fullDeck: currentDeck,
-    totalRounds: currentDeck.length,
-    dealerLogs: [log, ...(data.dealerLogs || [])].slice(0, 24),
+  await updateDoc(ref, sanitizeForFirestore({
+    fsmState: 'Leaderboard',
+    laserStrike: false,
+    dealerMessage: endLog.message,
+    dealerLogs: [endLog, ...(data.dealerLogs || [])].slice(0, 24),
+    serverTime: Date.now(),
     updatedAt: serverTimestamp(),
-  });
+  }));
 }
 
+// Aliases with 'Internal' suffix for backwards compatibility with any existing imports
+export {
+  createFirestoreArena as createFirestoreArenaInternal,
+  joinFirestoreArena as joinFirestoreArenaInternal,
+  subscribeFirestoreArena as subscribeFirestoreArenaInternal,
+  startFirestoreArena as startFirestoreArenaInternal,
+  submitAnswerFirestoreArena as submitAnswerFirestoreArenaInternal,
+  submitIndividualAnswer as submitIndividualAnswerInternal,
+  advancePlayerQuestion as advancePlayerQuestionInternal,
+  activateVisaExtension as activateVisaExtensionInternal,
+  registerForVisaExtension as registerForVisaExtensionInternal,
+  startVisaExtensionQuiz as startVisaExtensionQuizInternal,
+  submitVisaExtensionAnswer as submitVisaExtensionAnswerInternal,
+  resumeGameAfterExtension as resumeGameAfterExtensionInternal,
+  nextPhaseFirestoreArena as nextPhaseFirestoreArenaInternal,
+  launchRevivalFirestoreArena as launchRevivalFirestoreArenaInternal,
+  setCustomDeckFirestoreArena as setCustomDeckFirestoreArenaInternal,
+  injectQuestionFirestoreArena as injectQuestionFirestoreArenaInternal,
+  finishMatchFirestoreArena as finishMatchFirestoreArenaInternal,
+  getQuestionsForSubject as getQuestionsForSubjectInternal,
+  createPlayer as createPlayerInternal,
+  generateRoomCode as generateRoomCodeInternal,
+  toClientQuestion as toClientQuestionInternal,
+  sanitizeForFirestore,
+};
