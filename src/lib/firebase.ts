@@ -71,6 +71,39 @@ export const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
+/**
+ * Helper function to recursively sanitize any object/array for Firestore writes.
+ * Removes all `undefined` values to prevent "Unsupported field value: undefined" errors,
+ * while preserving Firestore sentinels (serverTimestamp, arrayUnion, FieldValue),
+ * Timestamps, Dates, and null.
+ */
+export function sanitizeForFirestore<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return (data === undefined ? null : data) as unknown as T;
+  }
+  if (typeof data !== 'object') {
+    return data;
+  }
+  const proto = Object.getPrototypeOf(data);
+  const isPlain = proto === null || proto === Object.prototype;
+  if (!isPlain && !Array.isArray(data)) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return (data as any[])
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeForFirestore(item)) as unknown as T;
+  }
+  const cleaned: Record<string, any> = {};
+  for (const key of Object.keys(data as Record<string, any>)) {
+    const val = (data as Record<string, any>)[key];
+    if (val !== undefined) {
+      cleaned[key] = sanitizeForFirestore(val);
+    }
+  }
+  return cleaned as T;
+}
+
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
@@ -264,11 +297,11 @@ export async function ensureUserProfile(user: User): Promise<UserProfile | null>
         tabViolationsTotal: 0,
       };
 
-      await setDoc(ref, {
+      await setDoc(ref, sanitizeForFirestore({
         ...newProfile,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
+      }));
 
       return newProfile;
     } else {
@@ -278,7 +311,7 @@ export async function ensureUserProfile(user: User): Promise<UserProfile | null>
       // Super Admin override guarantee
       if (isAdminEmail && role !== 'admin') {
         role = 'admin';
-        await updateDoc(ref, { role: 'admin', updatedAt: serverTimestamp() });
+        await updateDoc(ref, sanitizeForFirestore({ role: 'admin', updatedAt: serverTimestamp() }));
       } else if (!data.role) {
         try {
           const preSnap = await getDoc(doc(db, 'authorized_hosts', email));
@@ -288,7 +321,7 @@ export async function ensureUserProfile(user: User): Promise<UserProfile | null>
         } catch {
           // Fallback
         }
-        await updateDoc(ref, { role, updatedAt: serverTimestamp() });
+        await updateDoc(ref, sanitizeForFirestore({ role, updatedAt: serverTimestamp() }));
       }
 
       return {
@@ -395,10 +428,10 @@ export async function updateUserRole(targetUid: string, newRole: UserRole): Prom
   const uid = sanitizeId(targetUid);
   const path = `users/${uid}`;
   try {
-    await updateDoc(doc(db, 'users', uid), {
+    await updateDoc(doc(db, 'users', uid), sanitizeForFirestore({
       role: newRole,
       updatedAt: serverTimestamp(),
-    });
+    }));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -416,23 +449,23 @@ export async function preauthorizeHostEmail(
 
   try {
     // 1. Lưu vào collection authorized_hosts
-    await setDoc(doc(db, 'authorized_hosts', email), {
+    await setDoc(doc(db, 'authorized_hosts', email), sanitizeForFirestore({
       email,
       role: 'host',
       grantedBy: auth.currentUser?.email || 'admin',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
+    }));
 
     // 2. Nếu tài khoản này đã từng đăng nhập vào app, cập nhật ngay quyền trong collection users
     const q = query(collection(db, 'users'), where('email', '==', email), limit(1));
     const snap = await getDocs(q);
     if (!snap.empty) {
       const userDoc = snap.docs[0];
-      await updateDoc(userDoc.ref, {
+      await updateDoc(userDoc.ref, sanitizeForFirestore({
         role: 'host',
         updatedAt: serverTimestamp(),
-      });
+      }));
       return {
         success: true,
         message: `Đã cấp quyền Chủ phòng thành công cho tài khoản ${email}.`,
@@ -505,7 +538,7 @@ export async function persistCompletedMatch(
   const recordId = sanitizeId(`rec_${uid.slice(0, 10)}_${Date.now()}`);
   const matchPath = `matchRecords/${recordId}`;
   try {
-    await setDoc(doc(db, 'matchRecords', recordId), {
+    await setDoc(doc(db, 'matchRecords', recordId), sanitizeForFirestore({
       ownerId: uid,
       arenaCode: sanitizeRoomCode(roomCode),
       subject: subject.slice(0, 64) || 'General',
@@ -520,7 +553,7 @@ export async function persistCompletedMatch(
       clubsScore: clamp(suitPct('clubs'), 0, 100),
       diamondsScore: clamp(suitPct('diamonds'), 0, 100),
       createdAt: serverTimestamp(),
-    });
+    }));
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, matchPath);
   }
@@ -541,7 +574,7 @@ export async function persistCompletedMatch(
         0,
         gamesPlayed
       );
-      await updateDoc(profileRef, {
+      await updateDoc(profileRef, sanitizeForFirestore({
         displayName: (player.name || user.displayName || 'Survivor').slice(0, 64),
         totalVisaEarned: Math.round(clamp((Number(data.totalVisaEarned) || 0) + player.visa, 0, 10000)),
         gamesPlayed,
@@ -551,7 +584,7 @@ export async function persistCompletedMatch(
           clamp((Number(data.tabViolationsTotal) || 0) + player.tabSwitches, 0, 10000)
         ),
         updatedAt: serverTimestamp(),
-      });
+      }));
     } else {
       await ensureUserProfile(user);
     }
@@ -577,7 +610,7 @@ export async function persistCompletedMatch(
       updatedAt: serverTimestamp(),
     };
     if (lbSnap.exists()) {
-      await updateDoc(lbRef, {
+      await updateDoc(lbRef, sanitizeForFirestore({
         displayName: payload.displayName,
         bestScore: payload.bestScore,
         visaBalance: payload.visaBalance,
@@ -586,9 +619,9 @@ export async function persistCompletedMatch(
         rankSuit: payload.rankSuit,
         isPublic: true,
         updatedAt: serverTimestamp(),
-      });
+      }));
     } else {
-      await setDoc(lbRef, payload);
+      await setDoc(lbRef, sanitizeForFirestore(payload));
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, lbPath);
@@ -616,7 +649,7 @@ export async function syncArenaMetadataToFirestore(
     const snap = await getDoc(ref);
     if (!snap.exists()) {
       if (params.fsmState !== 'Lobby') return;
-      await setDoc(ref, {
+      await setDoc(ref, sanitizeForFirestore({
         hostUid: uid,
         roomCode: sanitizeRoomCode(params.roomCode),
         subject: params.subject.slice(0, 64) || 'General',
@@ -627,16 +660,16 @@ export async function syncArenaMetadataToFirestore(
         isPublic: true,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
+      }));
     } else {
       const existingData = snap.data();
       if (existingData.hostUid !== uid || existingData.fsmState === 'Leaderboard') return;
-      await updateDoc(ref, {
+      await updateDoc(ref, sanitizeForFirestore({
         fsmState: params.fsmState,
         currentRound: Math.round(clamp(params.currentRound, 0, 50)),
         activePlayers: Math.round(clamp(params.activePlayers, 0, 500)),
         updatedAt: serverTimestamp(),
-      });
+      }));
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
