@@ -108,7 +108,7 @@ export function DealerConsoleView() {
     setExtExplanation(visaExtensionDraft.explanation);
   }, [visaExtensionDraft]);
 
-  const [subject, setSubject] = useState<string>(room?.subject || ARENA_SUBJECTS[0]);
+  const [subject, setSubject] = useState<string>(room?.subject || 'Thử thách Trí tuệ Sinh tồn');
   const [suit, setSuit] = useState<CardSuit>('diamonds');
   const [difficulty, setDifficulty] = useState<number>(8);
 
@@ -627,21 +627,17 @@ export function DealerConsoleView() {
           <div className="space-y-4">
             <div>
               <label htmlFor="dealer-subject" className="block text-xs font-medium text-slate-300 mb-1.5">
-                Lĩnh vực
+                Chủ đề / Lĩnh vực câu hỏi
               </label>
-              <select
+              <input
                 id="dealer-subject"
+                type="text"
                 value={room?.subject || subject}
-                disabled={Boolean(room)}
+                disabled={Boolean(room?.subject)}
                 onChange={(e) => setSubject(e.target.value)}
-                className="w-full h-11 px-3.5 bg-[#090A0D] border border-white/15 text-sm text-white disabled:opacity-60"
-              >
-                {ARENA_SUBJECTS.map((s) => (
-                  <option key={s} value={s}>
-                    {getSubjectLabelVi(s)}
-                  </option>
-                ))}
-              </select>
+                placeholder="Nhập chủ đề cho câu hỏi AI..."
+                className="w-full h-11 px-3.5 bg-[#090A0D] border border-white/15 text-sm text-white placeholder:text-slate-500 disabled:opacity-80"
+              />
             </div>
 
             <div>
