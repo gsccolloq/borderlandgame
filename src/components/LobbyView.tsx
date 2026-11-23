@@ -12,6 +12,7 @@ import {
   FileSpreadsheet,
   Link,
   AlertCircle,
+  Sparkles,
 } from 'lucide-react';
 import {
   ARENA_SUBJECTS,
@@ -22,6 +23,8 @@ import {
 } from '../types/game';
 import { useGameStore } from '../store/gameStore';
 import { SuitIcon } from './SuitIcon';
+import { hasConnectedApiKey, forgeQuestionDeckFromTopic } from '../lib/geminiService';
+import { GeminiSettingsModal } from './GeminiSettingsModal';
 
 import arenaBackdrop from '../assets/images/arena_backdrop_1795409273443.jpg';
 import dealerEmblem from '../assets/images/dealer_emblem_1795409271275.jpg';
@@ -50,16 +53,22 @@ export function LobbyView() {
   const toggleAudio = useGameStore((s) => s.toggleAudio);
   const toggleVoice = useGameStore((s) => s.toggleVoice);
   const setActiveTab = useGameStore((s) => s.setActiveTab);
+  const customDeck = useGameStore((s) => s.customDeck);
 
   const isHostOrAdmin = userRole === 'admin' || userRole === 'host';
   const isHostOfCurrentRoom = room && (room.hostPlayerId === playerId || userRole === 'admin');
 
-  const [subject, setSubject] = useState<string>(ARENA_SUBJECTS[0]);
+  const [subject, setSubject] = useState<string>('');
   const [joinCode, setJoinCode] = useState('');
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [backdropFailed, setBackdropFailed] = useState(false);
   const [emblemFailed, setEmblemFailed] = useState(false);
+
+  const [isGeneratingAi, setIsGeneratingAi] = useState(false);
+  const [aiProgressMsg, setAiProgressMsg] = useState('');
+  const [showMissingKeyWarning, setShowMissingKeyWarning] = useState(false);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
 
   // Auto-detect room parameter from URL (?room=BL-XXXX or ?code=BL-XXXX)
   useEffect(() => {
@@ -85,6 +94,47 @@ export function LobbyView() {
     navigator.clipboard?.writeText(directUrl).catch(() => {});
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 1800);
+  };
+
+  const handleHostCreateRoom = async () => {
+    const currentSubject = subject.trim() || 'Thử thách Trí tuệ Sinh tồn';
+
+    // Trường hợp 1: Host đã tải file Excel lên -> Dùng trực tiếp bộ câu hỏi Excel
+    if (customDeck && customDeck.length > 0) {
+      await createRoom(currentSubject, customDeck);
+      return;
+    }
+
+    // Trường hợp 2: Host không tải file Excel -> Dùng Gemini AI sinh bộ câu hỏi theo đúng chủ đề
+    const hasKey = hasConnectedApiKey();
+    if (hasKey) {
+      try {
+        setIsGeneratingAi(true);
+        setAiProgressMsg('AI đang soạn bộ câu hỏi bám sát chủ đề...');
+        const generatedDeck = await forgeQuestionDeckFromTopic({
+          topicPrompt: currentSubject,
+          count: 8,
+          onProgress: (msg) => setAiProgressMsg(msg),
+        });
+        await createRoom(currentSubject, generatedDeck);
+      } catch (err: unknown) {
+        console.error('Lỗi khi AI soạn đề:', err);
+        setAiProgressMsg(err instanceof Error ? err.message : 'Lỗi không xác định khi gọi AI.');
+        setShowMissingKeyWarning(true);
+      } finally {
+        setIsGeneratingAi(false);
+      }
+      return;
+    }
+
+    // Trường hợp 3: Chưa có Excel và chưa có API Key -> Hiện cảnh báo rõ ràng
+    setShowMissingKeyWarning(true);
+  };
+
+  const handleProceedWithoutAi = async () => {
+    setShowMissingKeyWarning(false);
+    const currentSubject = subject.trim() || 'Thử thách Trí tuệ Sinh tồn';
+    await createRoom(currentSubject);
   };
 
   const suits: CardSuit[] = ['spades', 'hearts', 'clubs', 'diamonds'];
@@ -247,7 +297,7 @@ export function LobbyView() {
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
                           <label htmlFor="arena-subject" className="block text-xs font-medium text-slate-300">
-                            Lĩnh vực Thử thách
+                            Lĩnh vực Thử thách & Yêu cầu đề thi
                           </label>
                           <button
                             type="button"
@@ -258,27 +308,107 @@ export function LobbyView() {
                             <span>Tải đề bằng Excel</span>
                           </button>
                         </div>
-                        <select
+
+                        {/* Excel Loaded Status Badge */}
+                        {customDeck && customDeck.length > 0 ? (
+                          <div className="mb-2 p-2 bg-emerald-950/40 border border-emerald-500/30 flex items-center justify-between text-xs text-emerald-300">
+                            <span className="flex items-center gap-1.5">
+                              <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                              Đang nạp bộ câu hỏi Excel ({customDeck.length} câu)
+                            </span>
+                            <span className="text-[10px] text-emerald-400 font-mono">Đã sẵn sàng</span>
+                          </div>
+                        ) : null}
+
+                        {/* Free-text input / textarea for custom topic */}
+                        <textarea
                           id="arena-subject"
                           value={subject}
                           onChange={(e) => setSubject(e.target.value)}
-                          className="w-full h-11 px-3.5 bg-[#090A0D] border border-white/15 text-sm text-white focus:outline-none focus:border-red-500"
-                        >
-                          {ARENA_SUBJECTS.map((sub) => (
-                            <option key={sub} value={sub}>
-                              {getSubjectLabelVi(sub)}
-                            </option>
-                          ))}
-                        </select>
+                          rows={2}
+                          placeholder="Nhập chủ đề hoặc yêu cầu để AI tự tạo câu hỏi, ví dụ: Tâm lý học đại cương, 10 câu độ khó trung bình..."
+                          className="w-full px-3.5 py-2.5 bg-[#090A0D] border border-white/15 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-red-500 resize-none font-sans"
+                        />
+
+                        {!customDeck && (
+                          <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
+                            <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
+                            <span>AI Quản trò sẽ tự động soạn 8 câu hỏi bám sát đúng chủ đề trên khi bấm Tạo phòng.</span>
+                          </p>
+                        )}
                       </div>
+
+                      {/* AI Generation In-progress Banner */}
+                      {isGeneratingAi && (
+                        <div className="p-3 bg-red-950/40 border border-red-500/50 flex items-center gap-3">
+                          <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin shrink-0" />
+                          <span className="text-xs text-red-200 font-mono">
+                            {aiProgressMsg || 'AI đang soạn bộ câu hỏi...'}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Missing API Key & Missing Excel Notice */}
+                      {showMissingKeyWarning && (
+                        <div className="p-3.5 bg-amber-950/40 border border-amber-500/50 space-y-2.5">
+                          <div className="flex items-start gap-2 text-amber-300 text-xs">
+                            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                            <div>
+                              <p className="font-semibold text-amber-200">Chưa cài đặt Gemini API Key và chưa nạp file Excel</p>
+                              <p className="text-amber-300/90 mt-0.5">
+                                Để AI tự động soạn bộ câu hỏi theo chủ đề của bạn, hãy nhập Gemini API Key hoặc tải file Excel có sẵn.
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowMissingKeyWarning(false);
+                                setShowApiKeyModal(true);
+                              }}
+                              className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black text-xs font-semibold cursor-pointer"
+                            >
+                              Cài đặt API Key
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowMissingKeyWarning(false);
+                                setActiveTab('dealer');
+                              }}
+                              className="px-3 py-1.5 bg-[#1B1F2A] hover:bg-white hover:text-black border border-white/20 text-xs text-white font-medium cursor-pointer"
+                            >
+                              Tải đề bằng Excel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleProceedWithoutAi}
+                              className="px-3 py-1.5 text-xs text-slate-400 hover:text-white underline cursor-pointer"
+                            >
+                              Vẫn tiếp tục tạo phòng
+                            </button>
+                          </div>
+                        </div>
+                      )}
 
                       <button
                         type="button"
-                        onClick={() => createRoom(subject)}
-                        className="w-full h-12 px-5 bg-red-600 hover:bg-red-500 text-white text-sm font-semibold tracking-wide flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                        disabled={isGeneratingAi}
+                        onClick={handleHostCreateRoom}
+                        className="w-full h-12 px-5 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-sm font-semibold tracking-wide flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                       >
-                        <Play className="w-4 h-4" />
-                        <span>Tạo phòng Đấu trường (Host)</span>
+                        {isGeneratingAi ? (
+                          <>
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            <span>AI đang soạn bộ câu hỏi...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-4 h-4" />
+                            <span>Tạo phòng Đấu trường (Host)</span>
+                          </>
+                        )}
                       </button>
                     </div>
                   ) : null}
@@ -502,6 +632,12 @@ export function LobbyView() {
           </div>
         </section>
       )}
+
+      {/* Gemini API Key Modal for Host configuration */}
+      <GeminiSettingsModal
+        isOpen={showApiKeyModal}
+        onClose={() => setShowApiKeyModal(false)}
+      />
     </div>
   );
 }
