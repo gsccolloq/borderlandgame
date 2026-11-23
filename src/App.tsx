@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import {
   auth,
+  checkRedirectAuthResult,
   ensureUserProfile,
   persistCompletedMatch,
   subscribeLeaderboard,
@@ -42,7 +43,7 @@ function ArenaAppShell() {
   const setMatchHistory = useGameStore((s) => s.setMatchHistory);
   const setLiveArenas = useGameStore((s) => s.setLiveArenas);
   const setFirestoreError = useGameStore((s) => s.setFirestoreError);
-  const connectWs = useGameStore((s) => s.connectWs);
+  const initFirestoreSync = useGameStore((s) => s.initFirestoreSync);
   const reportTabViolation = useGameStore((s) => s.reportTabViolation);
   const glitchActive = useGameStore((s) => s.glitchActive);
   const laserActive = useGameStore((s) => s.laserActive);
@@ -53,10 +54,13 @@ function ArenaAppShell() {
 
   const persistedMatchKeyRef = useRef<string | null>(null);
 
-  // 1. Connect WebSocket for <100ms server-authoritative FSM
+  // 1. Initialize Cloud Firestore Real-time Sync & check Google redirect sign-in
   useEffect(() => {
-    connectWs();
-  }, [connectWs]);
+    initFirestoreSync();
+    checkRedirectAuthResult().catch((e) => {
+      console.warn('Redirect auth check notice:', e);
+    });
+  }, [initFirestoreSync]);
 
   // 2. Firebase Auth listener & Real-time User Profile & RBAC role subscription
   useEffect(() => {
@@ -115,31 +119,30 @@ function ArenaAppShell() {
     }
   }, [activeTab, userRole, setActiveTab]);
 
-  // 3. Firestore Real-time Snapshots (attached strictly after auth is ready & user signed in)
+  // 3. Firestore Real-time Snapshots (Public Leaderboard & Live Arenas + Authenticated History)
   useEffect(() => {
-    if (!authReady || !user) {
-      setFirestoreLeaderboard([]);
-      setMatchHistory([]);
-      setLiveArenas([]);
-      return;
-    }
-
     const unsubLb = subscribeLeaderboard(setFirestoreLeaderboard, (err) =>
-      setFirestoreError(err.message)
-    );
-    const unsubHistory = subscribeMatchHistory(user.uid, setMatchHistory, (err) =>
       setFirestoreError(err.message)
     );
     const unsubArenas = subscribeLiveArenas(setLiveArenas, (err) =>
       setFirestoreError(err.message)
     );
 
+    let unsubHistory: (() => void) | null = null;
+    if (user) {
+      unsubHistory = subscribeMatchHistory(user.uid, setMatchHistory, (err) =>
+        setFirestoreError(err.message)
+      );
+    } else {
+      setMatchHistory([]);
+    }
+
     return () => {
       unsubLb();
-      unsubHistory();
       unsubArenas();
+      if (unsubHistory) unsubHistory();
     };
-  }, [authReady, user, setFirestoreLeaderboard, setMatchHistory, setLiveArenas, setFirestoreError]);
+  }, [user, setFirestoreLeaderboard, setMatchHistory, setLiveArenas, setFirestoreError]);
 
   // 4. Sync host's live Arena metadata & persist finished MatchRecord to Firestore
   useEffect(() => {
