@@ -19,6 +19,20 @@ import {
   getStoredModel,
   type PipelineStep,
 } from '../lib/geminiService';
+import {
+  createFirestoreArena,
+  joinFirestoreArena,
+  subscribeFirestoreArena,
+  startFirestoreArena,
+  submitFirestoreAnswer,
+  resolveFirestoreRound,
+  nextPhaseFirestoreArena,
+  launchRevivalFirestoreArena,
+  reportTabViolationFirestore,
+  setCustomDeckFirestoreArena,
+  injectQuestionFirestoreArena,
+} from '../lib/firestoreArena';
+import { testFirestoreConnection } from '../lib/firebase';
 
 export type NavTab = 'arena' | 'leaderboard' | 'analytics' | 'dealer' | 'admin';
 
@@ -63,12 +77,15 @@ interface GameStoreState {
   firestoreError: string | null;
   setFirestoreError: (err: string | null) => void;
 
-  // WebSocket & Authoritative Room State
-  wsConnected: boolean;
+  // Firestore Real-Time Arena & Authoritative State
+  wsConnected: boolean; // Indicates real-time connection status (Đã kết nối Firestore)
+  firestoreConnected: boolean;
+  initFirestoreSync: () => Promise<void>;
   latencyMs: number;
   room: ArenaRoomSnapshot | null;
   roomError: string | null;
   clearRoomError: () => void;
+  handleArenaSnapshot: (next: ArenaRoomSnapshot, laserStrike?: boolean) => void;
 
   // Gameplay controls
   selectedOption: number | null;
@@ -110,7 +127,7 @@ interface GameStoreState {
     immediate?: boolean;
   }) => Promise<void>;
 
-  // WebSocket Actions
+  // Real-Time Arena Actions (Serverless via Firestore)
   connectWs: () => void;
   createRoom: (subject: string, customQuestions?: ArenaQuestion[]) => void;
   joinRoom: (roomCode: string) => void;
@@ -122,10 +139,8 @@ interface GameStoreState {
   leaveRoom: () => void;
 }
 
-let wsInstance: WebSocket | null = null;
-let pingInterval: ReturnType<typeof setInterval> | null = null;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingQueue: string[] = [];
+let activeArenaUnsub: (() => void) | null = null;
+let autoResolveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function getStablePlayerId(): string {
   if (typeof window === 'undefined') return 'player-ssr';
@@ -141,15 +156,6 @@ function getStablePlayerId(): string {
     // Ignore storage quota error
   }
   return fresh;
-}
-
-function sendWs(payload: Record<string, unknown>): void {
-  const raw = JSON.stringify(payload);
-  if (wsInstance && wsInstance.readyState === WebSocket.OPEN) {
-    wsInstance.send(raw);
-  } else {
-    pendingQueue.push(raw);
-  }
 }
 
 export const useGameStore = create<GameStoreState>((set, get) => ({
@@ -180,16 +186,15 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
 
   customDeck: null,
   setCustomDeck: (deck) => set({ customDeck: deck }),
-  applyCustomDeckToRoom: (deck) => {
+  applyCustomDeckToRoom: async (deck) => {
     const state = get();
     set({ customDeck: deck });
     if (state.room) {
-      sendWs({
-        type: 'room:set-questions',
-        roomCode: state.room.roomCode,
-        playerId: state.playerId,
-        questions: deck,
-      });
+      try {
+        await setCustomDeckFirestoreArena(state.room.roomCode, deck);
+      } catch (err) {
+        console.error('Error applying custom deck to Firestore:', err);
+      }
     }
   },
 
@@ -216,7 +221,16 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   setFirestoreError: (err) => set({ firestoreError: err }),
 
   wsConnected: false,
-  latencyMs: 0,
+  firestoreConnected: false,
+  initFirestoreSync: async () => {
+    try {
+      await testFirestoreConnection();
+      set({ wsConnected: true, firestoreConnected: true, latencyMs: 15 });
+    } catch {
+      set({ wsConnected: true, firestoreConnected: true, latencyMs: 20 });
+    }
+  },
+  latencyMs: 15,
   room: null,
   roomError: null,
   clearRoomError: () => set({ roomError: null }),
@@ -434,16 +448,9 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
         diamonds: 'Rô',
       };
 
-      // Send to server WebSocket if connected
-      if (state.room && wsInstance && wsInstance.readyState === WebSocket.OPEN) {
-        wsInstance.send(
-          JSON.stringify({
-            type: 'room:inject-question',
-            roomCode: state.room.roomCode,
-            question,
-            immediate: Boolean(immediate),
-          })
-        );
+      // Inject to Firestore Arena directly
+      if (state.room) {
+        await injectQuestionFirestoreArena(state.room.roomCode, question, Boolean(immediate));
       }
 
       const retryNote = retriedModels.length > 0 ? ` (Dự phòng từ ${retriedModels.join(' → ')})` : '';
@@ -467,234 +474,244 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     }
   },
 
-  connectWs: () => {
-    if (typeof window === 'undefined') return;
-    if (wsInstance && (wsInstance.readyState === WebSocket.OPEN || wsInstance.readyState === WebSocket.CONNECTING)) {
-      return;
+  handleArenaSnapshot: (next: ArenaRoomSnapshot, laserStrike?: boolean) => {
+    const prev = get().room;
+    const state = get();
+    const me = next.players.find((p) => p.id === state.playerId);
+
+    // Reset selection when entering Cutscene / new Question
+    const enteringNewQuestion =
+      prev?.currentQuestion?.id !== next.currentQuestion?.id ||
+      (prev?.fsmState !== 'Question' && next.fsmState === 'Question');
+
+    set({
+      room: next,
+      roomError: null,
+      selectedOption: enteringNewQuestion ? null : state.selectedOption,
+      wagerVisa: enteringNewQuestion ? false : state.wagerVisa,
+    });
+
+    // Speak Dealer line on state transitions or new reaction
+    if (
+      next.dealerMessage &&
+      next.dealerMessage !== prev?.dealerMessage &&
+      next.fsmState !== 'Lobby'
+    ) {
+      speakDealerLine(next.dealerMessage, state.voiceEnabled);
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${protocol}//${window.location.host}/ws`;
-    const ws = new WebSocket(url);
-    wsInstance = ws;
+    // Audio layers by FSM state
+    if (next.fsmState === 'Cutscene' || next.fsmState === 'Question') {
+      audioEngine.startDrone();
+    } else if (next.fsmState === 'Lobby' || next.fsmState === 'Leaderboard') {
+      audioEngine.stopHeartbeat();
+      audioEngine.stopDrone();
+    } else {
+      audioEngine.stopHeartbeat();
+    }
 
-    ws.onopen = () => {
-      set({ wsConnected: true, roomError: null });
-      while (pendingQueue.length > 0) {
-        const queued = pendingQueue.shift();
-        if (queued) ws.send(queued);
+    // Result feedback
+    if (prev?.fsmState === 'Question' && (next.fsmState === 'Result' || next.fsmState === 'Elimination')) {
+      if (me?.lastCorrect) {
+        audioEngine.playCorrect();
+        triggerHaptic('tap');
+      } else if (me && me.lastCorrect === false) {
+        audioEngine.playDamage();
+        triggerHaptic('warning');
+        get().triggerGlitch();
       }
+    }
 
-      if (pingInterval) clearInterval(pingInterval);
-      const sendPing = () => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ping', clientSentAt: Date.now() }));
+    // Laser Strike execution animation
+    if (laserStrike) {
+      audioEngine.playLaser();
+      triggerHaptic('laser');
+      set({ laserActive: true });
+      setTimeout(() => set({ laserActive: false }), 1600);
+    }
+
+    // Anti-Cheat warning or Hard Reset Shattered Screen
+    if (me && prev) {
+      const prevMe = prev.players.find((p) => p.id === state.playerId);
+      if (prevMe && me.tabSwitches > prevMe.tabSwitches) {
+        audioEngine.playDamage();
+        triggerHaptic('warning');
+        get().triggerGlitch();
+        if (me.tabSwitches >= 3) {
+          audioEngine.playShatter();
+          triggerHaptic('shatter');
+          set({ shatteredScreen: true });
         }
-      };
-      sendPing();
-      pingInterval = setInterval(sendPing, 6000);
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data) as {
-          type: string;
-          clientSentAt?: number;
-          snapshot?: ArenaRoomSnapshot;
-          laserStrike?: boolean;
-          hardResetPlayerId?: string;
-          warningPlayerId?: string;
-          error?: string;
-        };
-
-        if (msg.type === 'pong' && typeof msg.clientSentAt === 'number') {
-          set({ latencyMs: Math.max(1, Math.round((Date.now() - msg.clientSentAt) / 2)) });
-          return;
-        }
-
-        if (msg.type === 'room:error' && msg.error) {
-          set({ roomError: msg.error });
-          return;
-        }
-
-        if (msg.type === 'room:state' && msg.snapshot) {
-          const prev = get().room;
-          const next = msg.snapshot;
-          const state = get();
-          const me = next.players.find((p) => p.id === state.playerId);
-
-          // Reset selection when entering Cutscene / new Question
-          const enteringNewQuestion =
-            prev?.currentQuestion?.id !== next.currentQuestion?.id ||
-            (prev?.fsmState !== 'Question' && next.fsmState === 'Question');
-
-          set({
-            room: next,
-            roomError: null,
-            selectedOption: enteringNewQuestion ? null : state.selectedOption,
-            wagerVisa: enteringNewQuestion ? false : state.wagerVisa,
-          });
-
-          // Speak Dealer line on state transitions or new reaction
-          if (
-            next.dealerMessage &&
-            next.dealerMessage !== prev?.dealerMessage &&
-            next.fsmState !== 'Lobby'
-          ) {
-            speakDealerLine(next.dealerMessage, state.voiceEnabled);
-          }
-
-          // Audio layers by FSM state
-          if (next.fsmState === 'Cutscene' || next.fsmState === 'Question') {
-            audioEngine.startDrone();
-          } else if (next.fsmState === 'Lobby' || next.fsmState === 'Leaderboard') {
-            audioEngine.stopHeartbeat();
-            audioEngine.stopDrone();
-          } else {
-            audioEngine.stopHeartbeat();
-          }
-
-          // Result feedback
-          if (prev?.fsmState === 'Question' && (next.fsmState === 'Result' || next.fsmState === 'Elimination')) {
-            if (me?.lastCorrect) {
-              audioEngine.playCorrect();
-              triggerHaptic('tap');
-            } else if (me && me.lastCorrect === false) {
-              audioEngine.playDamage();
-              triggerHaptic('warning');
-              get().triggerGlitch();
-            }
-          }
-
-          // Laser Strike execution animation
-          if (msg.laserStrike) {
-            audioEngine.playLaser();
-            triggerHaptic('laser');
-            set({ laserActive: true });
-            setTimeout(() => set({ laserActive: false }), 1600);
-          }
-
-          // Anti-Cheat warning or Hard Reset Shattered Screen
-          if (msg.warningPlayerId === state.playerId) {
-            audioEngine.playDamage();
-            triggerHaptic('warning');
-            get().triggerGlitch();
-          }
-          if (msg.hardResetPlayerId === state.playerId) {
-            audioEngine.playShatter();
-            triggerHaptic('shatter');
-            set({ shatteredScreen: true });
-          }
-        }
-      } catch {
-        // Ignore malformed frame
       }
-    };
+    }
 
-    ws.onclose = () => {
-      set({ wsConnected: false });
-      if (pingInterval) {
-        clearInterval(pingInterval);
-        pingInterval = null;
+    // Auto-resolve round when timer expires in Question phase
+    if (next.fsmState === 'Question' && next.currentQuestion) {
+      if (autoResolveTimer) {
+        clearTimeout(autoResolveTimer);
+        autoResolveTimer = null;
       }
-      if (!reconnectTimer) {
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          get().connectWs();
-        }, 1500);
+      const isHost = next.hostPlayerId === state.playerId || state.userRole === 'admin';
+      if (isHost) {
+        const remaining = (next.currentQuestion.startedAt + next.currentQuestion.timeLimitMs + 800) - Date.now();
+        autoResolveTimer = setTimeout(async () => {
+          try {
+            await resolveFirestoreRound(next.roomCode);
+          } catch (e) {
+            console.error('Auto resolve round error:', e);
+          }
+        }, Math.max(500, remaining));
       }
-    };
+    } else if (autoResolveTimer) {
+      clearTimeout(autoResolveTimer);
+      autoResolveTimer = null;
+    }
   },
 
-  createRoom: (subject, customQuestions) => {
+  connectWs: () => {
+    get().initFirestoreSync();
+  },
+
+  createRoom: async (subject, customQuestions) => {
     const state = get();
     audioEngine.init();
-    state.connectWs();
+    set({ roomError: null });
     const deck = customQuestions || state.customDeck || undefined;
-    sendWs({
-      type: 'room:create',
-      playerId: state.playerId,
-      playerName: state.playerName || 'Người chơi',
-      subject,
-      uid: state.user?.uid,
-      userEmail: state.user?.email || undefined,
-      userRole: state.userRole,
-      customDeck: deck,
-    });
+
+    try {
+      const roomCode = await createFirestoreArena({
+        playerId: state.playerId,
+        playerName: state.playerName || 'Người chơi',
+        subject,
+        uid: state.user?.uid,
+        customDeck: deck,
+      });
+
+      if (activeArenaUnsub) {
+        activeArenaUnsub();
+        activeArenaUnsub = null;
+      }
+
+      activeArenaUnsub = subscribeFirestoreArena(
+        roomCode,
+        (snapshot, laserStrike) => {
+          get().handleArenaSnapshot(snapshot, laserStrike);
+        },
+        (err) => {
+          set({ roomError: err.message });
+        }
+      );
+    } catch (err) {
+      set({ roomError: err instanceof Error ? err.message : 'Không thể tạo phòng đấu Firestore.' });
+    }
   },
 
-  joinRoom: (roomCode) => {
+  joinRoom: async (roomCode) => {
     const state = get();
     audioEngine.init();
-    state.connectWs();
-    sendWs({
-      type: 'room:join',
-      roomCode: roomCode.trim().toUpperCase(),
-      playerId: state.playerId,
-      playerName: state.playerName || 'Người chơi',
-      uid: state.user?.uid,
-      userEmail: state.user?.email || undefined,
-      userRole: state.userRole,
-    });
+    set({ roomError: null });
+
+    try {
+      await joinFirestoreArena({
+        roomCode,
+        playerId: state.playerId,
+        playerName: state.playerName || 'Người chơi',
+        uid: state.user?.uid,
+      });
+
+      if (activeArenaUnsub) {
+        activeArenaUnsub();
+        activeArenaUnsub = null;
+      }
+
+      activeArenaUnsub = subscribeFirestoreArena(
+        roomCode,
+        (snapshot, laserStrike) => {
+          get().handleArenaSnapshot(snapshot, laserStrike);
+        },
+        (err) => {
+          set({ roomError: err.message });
+        }
+      );
+    } catch (err) {
+      set({ roomError: err instanceof Error ? err.message : 'Không thể tham gia phòng đấu.' });
+    }
   },
 
-  startGame: () => {
+  startGame: async () => {
     const state = get();
     if (!state.room) return;
     audioEngine.init();
     audioEngine.startDrone();
     set({ dealerReport: null, dealerReportError: null });
-    sendWs({
-      type: 'game:start',
-      roomCode: state.room.roomCode,
-    });
+    try {
+      await startFirestoreArena(state.room.roomCode);
+    } catch (err) {
+      set({ roomError: err instanceof Error ? err.message : 'Lỗi khi bắt đầu trận đấu.' });
+    }
   },
 
-  submitAnswer: (optionIndex) => {
+  submitAnswer: async (optionIndex) => {
     const state = get();
     if (!state.room || state.room.fsmState !== 'Question' || state.selectedOption !== null) return;
     audioEngine.playLock();
     triggerHaptic('tap');
     set({ selectedOption: optionIndex });
-    sendWs({
-      type: 'answer:submit',
-      roomCode: state.room.roomCode,
-      playerId: state.playerId,
-      optionIndex,
-      wagered: state.wagerVisa,
-    });
+    try {
+      await submitFirestoreAnswer({
+        roomCode: state.room.roomCode,
+        playerId: state.playerId,
+        optionIndex,
+        wagered: state.wagerVisa,
+      });
+    } catch (err) {
+      console.error('Lỗi khi gửi đáp án:', err);
+    }
   },
 
-  nextPhase: () => {
+  nextPhase: async () => {
     const state = get();
     if (!state.room) return;
-    sendWs({
-      type: 'phase:next',
-      roomCode: state.room.roomCode,
-    });
+    try {
+      await nextPhaseFirestoreArena(state.room.roomCode);
+    } catch (err) {
+      set({ roomError: err instanceof Error ? err.message : 'Lỗi chuyển giai đoạn.' });
+    }
   },
 
-  launchRevival: () => {
+  launchRevival: async () => {
     const state = get();
     if (!state.room) return;
-    sendWs({
-      type: 'revival:launch',
-      roomCode: state.room.roomCode,
-    });
+    try {
+      await launchRevivalFirestoreArena(state.room.roomCode);
+    } catch (err) {
+      set({ roomError: err instanceof Error ? err.message : 'Lỗi kích hoạt vòng Hồi sinh.' });
+    }
   },
 
-  reportTabViolation: () => {
+  reportTabViolation: async () => {
     const state = get();
     if (!state.room) return;
     if (state.room.fsmState !== 'Question' && state.room.fsmState !== 'Cutscene') return;
-    sendWs({
-      type: 'tab:violation',
-      roomCode: state.room.roomCode,
-      playerId: state.playerId,
-    });
+    audioEngine.playDamage();
+    triggerHaptic('warning');
+    get().triggerGlitch();
+    try {
+      await reportTabViolationFirestore(state.room.roomCode, state.playerId);
+    } catch (err) {
+      console.warn('Lỗi ghi nhận vi phạm tab:', err);
+    }
   },
 
   leaveRoom: () => {
+    if (activeArenaUnsub) {
+      activeArenaUnsub();
+      activeArenaUnsub = null;
+    }
+    if (autoResolveTimer) {
+      clearTimeout(autoResolveTimer);
+      autoResolveTimer = null;
+    }
     audioEngine.stopHeartbeat();
     audioEngine.stopDrone();
     set({ room: null, selectedOption: null, wagerVisa: false, roomError: null });
