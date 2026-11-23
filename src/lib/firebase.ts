@@ -3,6 +3,9 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signInAnonymously,
   signOut,
   type User,
 } from 'firebase/auth';
@@ -35,10 +38,29 @@ import type {
   UserRole,
 } from '../types/game';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const metaEnv =
+  typeof import.meta !== 'undefined' && import.meta.env
+    ? import.meta.env
+    : ({} as Record<string, string>);
+
+export const activeFirebaseConfig = {
+  apiKey: metaEnv.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
+  authDomain: metaEnv.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
+  projectId: metaEnv.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
+  storageBucket: metaEnv.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
+  messagingSenderId: metaEnv.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
+  appId: metaEnv.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
+  firestoreDatabaseId: metaEnv.VITE_FIREBASE_FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId || '(default)',
+};
+
+const app = initializeApp(activeFirebaseConfig);
+export const db =
+  activeFirebaseConfig.firestoreDatabaseId && activeFirebaseConfig.firestoreDatabaseId !== '(default)'
+    ? getFirestore(app, activeFirebaseConfig.firestoreDatabaseId)
+    : getFirestore(app);
 export const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 export enum OperationType {
   CREATE = 'create',
@@ -111,9 +133,62 @@ export const ADMIN_EMAIL = (
 ).toLowerCase().trim();
 
 export async function signInWithGoogle(): Promise<User> {
-  const result = await signInWithPopup(auth, googleProvider);
-  await ensureUserProfile(result.user);
-  return result.user;
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    await ensureUserProfile(result.user);
+    return result.user;
+  } catch (error: unknown) {
+    const firebaseError = error as { code?: string; message?: string };
+    const code = firebaseError?.code || '';
+    const currentDomain =
+      typeof window !== 'undefined' ? window.location.hostname : 'borderlandgame-five.vercel.app';
+
+    if (code === 'auth/unauthorized-domain') {
+      const msg = `Tên miền [${currentDomain}] chưa được cấp phép trong Firebase! Vui lòng vào Firebase Console > Authentication > Settings > Authorized domains và thêm tên miền "${currentDomain}".`;
+      console.error(msg, error);
+      throw new Error(msg);
+    }
+    if (code === 'auth/popup-blocked') {
+      console.warn('Popup bị chặn, đang chuyển hướng sang redirect sign-in...');
+      try {
+        await signInWithRedirect(auth, googleProvider);
+        return null as unknown as User;
+      } catch {
+        throw new Error('Trình duyệt đã chặn cửa sổ Popup đăng nhập. Vui lòng cho phép mở popup cho trang này.');
+      }
+    }
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+      throw new Error('Bạn đã đóng cửa sổ đăng nhập Google.');
+    }
+    if (code === 'auth/network-request-failed') {
+      throw new Error('Lỗi kết nối mạng khi xác thực với Google.');
+    }
+    throw new Error(firebaseError?.message || 'Đăng nhập Google thất bại.');
+  }
+}
+
+export async function checkRedirectAuthResult(): Promise<User | null> {
+  try {
+    const result = await getRedirectResult(auth);
+    if (result?.user) {
+      await ensureUserProfile(result.user);
+      return result.user;
+    }
+  } catch (e) {
+    console.warn('Redirect auth result check:', e);
+  }
+  return null;
+}
+
+export async function ensureAnonymousUser(): Promise<User | null> {
+  if (auth.currentUser) return auth.currentUser;
+  try {
+    const res = await signInAnonymously(auth);
+    return res.user;
+  } catch (e) {
+    console.warn('Anonymous auth not enabled in Firebase (optional):', e);
+    return null;
+  }
 }
 
 export async function signOutUser(): Promise<void> {
@@ -140,7 +215,7 @@ function clamp(val: number, min: number, max: number): number {
 }
 
 export async function ensureUserProfile(user: User): Promise<UserProfile | null> {
-  if (!user.emailVerified || !user.email) return null;
+  if (!user.email) return null;
   const uid = sanitizeId(user.uid);
   const email = user.email.toLowerCase().trim();
   const isAdminEmail = email === ADMIN_EMAIL;
