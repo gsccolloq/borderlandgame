@@ -75,16 +75,36 @@ export function GeminiSettingsModal({
     setTestResult(result);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const key = apiKeyInput.trim();
-    setStoredApiKey(key);
-    setStoredModel(selectedModel);
-    setSaveNotice('Đã lưu thành công cấu hình Model & API Key vào trình duyệt!');
-    onSaved?.(key, selectedModel);
+    if (!key) {
+      removeStoredApiKey();
+      setSaveNotice('Đã xóa API Key khỏi bộ nhớ.');
+      onSaved?.('', selectedModel);
+      setTimeout(() => {
+        onClose();
+      }, 700);
+      return;
+    }
 
-    setTimeout(() => {
-      onClose();
-    }, 900);
+    setIsTesting(true);
+    setTestResult(null);
+    setSaveNotice(null);
+
+    const result = await testGeminiApiKey(key, selectedModel);
+    setIsTesting(false);
+    setTestResult(result);
+
+    if (result.ok) {
+      setStoredApiKey(key);
+      setStoredModel(selectedModel);
+      setSaveNotice('Kiểm tra hợp lệ! Đã lưu cài đặt API Key thành công vào trình duyệt.');
+      onSaved?.(key, selectedModel);
+
+      setTimeout(() => {
+        onClose();
+      }, 1000);
+    }
   };
 
   const handleClear = () => {
