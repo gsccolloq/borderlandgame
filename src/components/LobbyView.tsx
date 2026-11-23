@@ -23,8 +23,11 @@ import {
 import { useGameStore } from '../store/gameStore';
 import { SuitIcon } from './SuitIcon';
 
-const ARENA_BACKDROP = '/src/assets/images/arena_backdrop_1795409273443.jpg';
-const DEALER_EMBLEM = '/src/assets/images/dealer_emblem_1795409271275.jpg';
+import arenaBackdrop from '../assets/images/arena_backdrop_1795409273443.jpg';
+import dealerEmblem from '../assets/images/dealer_emblem_1795409271275.jpg';
+
+const ARENA_BACKDROP = arenaBackdrop;
+const DEALER_EMBLEM = dealerEmblem;
 
 export function LobbyView() {
   const room = useGameStore((s) => s.room);
@@ -110,7 +113,10 @@ export function LobbyView() {
               <div className="flex items-center gap-3 text-xs font-mono text-slate-300">
                 <span>Giao thức Sinh tồn</span>
                 <span aria-hidden="true">/</span>
-                <span>{wsConnected ? `Đồng bộ ${latencyMs || 12}ms` : 'Đang kết nối'}</span>
+                <span className={wsConnected ? 'text-emerald-400 font-semibold flex items-center gap-1.5' : 'text-amber-400'}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                  <span>{wsConnected ? 'Đã kết nối Firestore' : 'Đang kết nối...'}</span>
+                </span>
                 <span aria-hidden="true">/</span>
                 <span>Chống gian lận: Bật</span>
               </div>
